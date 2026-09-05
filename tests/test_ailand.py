@@ -140,3 +140,58 @@ def test_mlp_rollout_is_differentiable():
     states.sum().backward()
     grads = [p.grad for p in model.backbone.parameters() if p.grad is not None]
     assert grads and any(g.abs().sum() > 0 for g in grads)
+
+
+def test_normaliser_is_nan_aware():
+    """A handful of missing values must not silently delete a whole variable.
+
+    In the O96 extract, 114 NaNs out of 33.7 million in `slhf` made a plain
+    mean/std NaN, which made every slhf prediction NaN, which made the scorer
+    drop the variable from the results table without any error.
+    """
+    import numpy as np
+    from ailand import mlp
+
+    X = np.random.rand(100, 5).astype("float32")
+    y_prog = np.random.rand(100, 3).astype("float32")
+    y_diag = np.random.rand(100, 2).astype("float32")
+    y_diag[7, 1] = np.nan  # one missing value in one column
+
+    norm = mlp.Normaliser(X, y_prog, y_diag)
+    assert np.isfinite(norm.d_mean).all(), "one NaN must not poison the column mean"
+    assert np.isfinite(norm.d_std).all()
+    assert np.isfinite(norm.tend).all()
+
+    # A column that is entirely missing is a data problem and must be loud.
+    y_diag[:, 0] = np.nan
+    try:
+        mlp.Normaliser(X, y_prog, y_diag)
+    except ValueError as e:
+        assert "non-finite" in str(e)
+    else:
+        raise AssertionError("an all-missing column must raise, not pass silently")
+
+
+def test_batched_rollout_matches_single_point():
+    """rollout_points over N points must equal N separate rollout() calls."""
+    import numpy as np
+    from ailand import infer
+
+    prog, diag, feat = config.resolve("v1")
+    meta_base = dict(prognostic=prog, diagnostic=[], profile="mock",
+                     prog_idx=[feat.index(v) for v in prog],
+                     scale_targets=False, tendency_scalers=None)
+
+    class Toy:
+        def predict(self, x):
+            return (x[:, :len(prog)] * 0.0 + 1e-4).astype("float32")
+
+    rng = np.random.default_rng(0)
+    feats = rng.random((3, 12, len(feat))).astype("float32")
+
+    batched, _ = infer.rollout_points(Toy(), None, dict(meta_base), feats.copy(),
+                                      verbose=False)
+    for i in range(3):
+        single, _ = infer.rollout(Toy(), None, dict(meta_base), feats[i].copy(),
+                                  verbose=False)
+        np.testing.assert_allclose(batched[i], single, rtol=1e-6)

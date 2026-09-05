@@ -82,17 +82,36 @@ class Normaliser:
     """
 
     def __init__(self, X, y_prog, y_diag=None):
-        self.x_mean = X.mean(0).astype("float32")
-        self.x_std = X.std(0).astype("float32")
-        self.x_std[self.x_std == 0] = 1.0
-        self.tend = y_prog.std(0).astype("float32")
-        self.tend[self.tend == 0] = 1.0
+        # NaN-aware throughout. A single missing value anywhere in a column makes
+        # a plain mean/std NaN, which then makes every prediction for that
+        # variable NaN -- and because the scorer drops non-finite values, the
+        # variable disappears from the results table silently rather than
+        # failing. That is exactly what happened to slhf in the O96 extract,
+        # which carries a handful of missing turbulent-flux values.
+        self.x_mean = np.nanmean(X, axis=0).astype("float32")
+        self.x_std = np.nanstd(X, axis=0).astype("float32")
+        self.tend = np.nanstd(y_prog, axis=0).astype("float32")
         if y_diag is not None and y_diag.size:
-            self.d_mean = y_diag.mean(0).astype("float32")
-            self.d_std = y_diag.std(0).astype("float32")
-            self.d_std[self.d_std == 0] = 1.0
+            self.d_mean = np.nanmean(y_diag, axis=0).astype("float32")
+            self.d_std = np.nanstd(y_diag, axis=0).astype("float32")
         else:
             self.d_mean = self.d_std = None
+        self._sanitise()
+
+    def _sanitise(self):
+        """Replace degenerate or non-finite statistics, and say so."""
+        for name in ("x_mean", "x_std", "tend", "d_mean", "d_std"):
+            a = getattr(self, name)
+            if a is None:
+                continue
+            bad = ~np.isfinite(a)
+            if bad.any():
+                raise ValueError(
+                    f"{name} is non-finite in {int(bad.sum())} position(s); a column "
+                    "is entirely missing. Fix the input data rather than masking it."
+                )
+            if name.endswith("std") or name == "tend":
+                a[a == 0] = 1.0
 
     def to_dict(self):
         d = dict(x_mean=self.x_mean.tolist(), x_std=self.x_std.tolist(),

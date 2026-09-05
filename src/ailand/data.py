@@ -165,6 +165,30 @@ def tendency_scalers(y_prog):
     return scale.astype("float32")
 
 
+def rollout_inputs_multi(preset=config.DEFAULT_PRESET, points=None, years=None,
+                         path=None, temporal=False, geo=False, prof="mock"):
+    """Feature array and truth for MANY grid points at once.
+
+    :returns: ``(feats, times, truth, meta)`` with ``feats`` shaped
+        ``(npoint, time, feature)``.
+    """
+    prog, diag, feat = config.resolve(preset, temporal=temporal, geo=geo, prof=prof)
+    ds = open_store(path, years, temporal=temporal or geo, prof=prof)
+    sel = ds.isel(time=slice(0, -1))
+    if points is not None:
+        sel = sel.isel(x=points)
+    feats = (sel[feat].to_array().astype("float32")
+             .transpose("x", "time", "variable").values.copy())
+    truth = sel[prog + diag]
+    meta = {
+        "preset": preset, "features": feat, "prognostic": prog, "diagnostic": diag,
+        "prog_idx": [feat.index(v) for v in prog],
+        "temporal": bool(temporal), "geo": bool(geo), "profile": prof,
+        "npoints": feats.shape[0],
+    }
+    return feats, sel.time.values, truth, meta
+
+
 def rollout_inputs(preset=config.DEFAULT_PRESET, point=5, years=None, path=None,
                    temporal=False, geo=False, prof="mock"):
     """Feature matrix and truth for a single grid point, for autoregressive rollout.

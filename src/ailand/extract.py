@@ -56,6 +56,8 @@ def main(argv=None):
     p.add_argument("--out", default=str(config.REPO / "data" / "o96_subset.zarr"))
     p.add_argument("--lsm-threshold", type=float, default=0.5)
     p.add_argument("--seed", type=int, default=config.SEED)
+    p.add_argument("--block", type=int, default=200,
+                   help="timesteps per write block; caps peak memory")
     args = p.parse_args(argv)
 
     z = zarr.open(args.source, mode="r")
@@ -85,34 +87,42 @@ def main(argv=None):
     print(f"sampling {pts.size} of them, lat {lat[pts].min():.1f} to {lat[pts].max():.1f}")
 
     idx = [variables.index(v) for v in KEEP]
-    out = np.empty((t1 - t0, len(KEEP), pts.size), dtype="float32")
     src = z["data"]
-    chunk = 200
+    times = dates[t0:t1].astype("datetime64[ns]")
+
+    def block_ds(block, tslice):
+        return xr.Dataset(
+            {name: (("time", "x"), block[:, i, :]) for i, name in enumerate(KEEP)},
+            coords={
+                "time": tslice,
+                "x": pts.astype("int32"),
+                "lat": ("x", lat[pts].astype("float32")),
+                "lon": ("x", lon[pts].astype("float32")),
+            },
+            attrs={"SOURCE": args.source, "GRID": "O96",
+                   "note": "extracted by ailand.extract"},
+        )
+
+    # Stream to disk in time blocks. Holding the whole extraction in memory is
+    # fine for a few hundred points but not for the full land set (11,538 points
+    # x 4,384 steps x 57 variables is ~11.5 GB, which gets the job memory-killed).
+    chunk = args.block
+    first = True
     for a in range(t0, t1, chunk):
         b = min(a + chunk, t1)
         block = src[a:b, :, 0, :][:, idx, :][:, :, pts]
-        out[a - t0:b - t0] = block
-        print(f"  read {b - t0}/{t1 - t0} steps", end="\r", flush=True)
+        ds = block_ds(block, times[a - t0:b - t0]).chunk({"time": -1, "x": -1})
+        if first:
+            ds.to_zarr(args.out, mode="w", consolidated=True)
+            first = False
+        else:
+            ds.to_zarr(args.out, mode="a", append_dim="time", consolidated=True)
+        print(f"  wrote {b - t0}/{t1 - t0} steps", end="\r", flush=True)
     print()
 
-    ds = xr.Dataset(
-        {name: (("time", "x"), out[:, i, :]) for i, name in enumerate(KEEP)},
-        coords={
-            "time": dates[t0:t1].astype("datetime64[ns]"),
-            "x": pts.astype("int32"),
-            "lat": ("x", lat[pts].astype("float32")),
-            "lon": ("x", lon[pts].astype("float32")),
-        },
-        attrs={"SOURCE": args.source, "GRID": "O96", "note": "extracted by ailand.extract"},
-    )
-    ds = ds.chunk({"time": -1, "x": -1})
-    ds.to_zarr(args.out, mode="w", consolidated=True)
-    nan = {v: float(np.isnan(ds[v].values).mean()) for v in ds.data_vars}
-    bad = {k: v for k, v in nan.items() if v > 0}
+    ds = xr.open_zarr(args.out)
     print(f"Wrote {args.out}: {ds.sizes['time']} times x {ds.sizes['x']} points, "
           f"{len(ds.data_vars)} variables")
-    if bad:
-        print("variables containing NaN:", {k: f"{v:.2%}" for k, v in bad.items()})
     return ds
 
 

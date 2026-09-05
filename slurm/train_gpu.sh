@@ -3,50 +3,61 @@
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
+#SBATCH --mem=96G
 #SBATCH --time=06:00:00
 #SBATCH --output=slurm/logs/%x.%j.out
 #SBATCH --error=slurm/logs/%x.%j.out
 #
-# Train the aiLand MLP on a GPU node.
+# Train the aiLand MLP on a GPU node at the aiLand v1 network size (6 x 512).
 #
-# The Atos gpu / gpu_debug partitions carry 4x NVIDIA A100 (ga100) per node,
-# which is the same hardware aiLand v1 trained on. This script uses one GPU;
-# see the note at the bottom on going to all four.
+# The Atos gpu / gpu_debug partitions carry 4x NVIDIA A100 (ga100) per node --
+# the same hardware v1 trained on. This uses one of them; see the note at the
+# end on going to all four.
 #
-#   sbatch slurm/train_gpu.sh
-#   sbatch --partition=gpu_debug --time=00:30:00 slurm/train_gpu.sh   # quick test
+#   sbatch slurm/train_gpu.sh                                  # defaults below
+#   DATA=data/o96_full.zarr OUT=o96_full_gpu sbatch slurm/train_gpu.sh
+#   sbatch --partition=gpu_debug --time=00:30:00 slurm/train_gpu.sh
 
 set -euo pipefail
-mkdir -p slurm/logs
 
 REPO=/perm/pad/ailand
 PY=/usr/local/apps/python3/3.12.9-01/bin/python3.12
 export PYTHONPATH="$REPO/src"
 cd "$REPO"
+mkdir -p slurm/logs
 
-nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+DATA="${DATA:-data/o96_2000.zarr}"
+OUT="${OUT:-o96_gpu}"
+PRESET="${PRESET:-v1+fluxes}"
+WIDTH="${WIDTH:-512}"
+DEPTH="${DEPTH:-6}"
+EPOCHS1="${EPOCHS1:-60}"
+EPOCHS2="${EPOCHS2:-8}"
+BATCH="${BATCH:-8192}"
+MAXSAMP="${MAXSAMP:-2000000}"
+NPOINTS_EVAL="${NPOINTS_EVAL:-200}"
 
-# Full O96 land set, all three years, the v1 state vector plus the extra fluxes.
-$PY -m ailand.train_mlp \
-    --profile o96 \
-    --preset "v1+fluxes" \
-    --data data/o96_full.zarr \
-    --temporal \
-    --width 512 --depth 6 \
-    --rollout 4 8 \
-    --epochs 80 8 \
-    --batch-size 8192 \
+echo "=== node $(hostname) ==="
+nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
+$PY -c "import torch; print('torch', torch.__version__, '| cuda', torch.cuda.is_available(),
+      '|', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NO GPU')"
+
+echo "=== training: $DATA -> models/$OUT ==="
+$PY -u -m ailand.train_mlp \
+    --profile o96 --preset "$PRESET" --data "$DATA" --temporal \
+    --width "$WIDTH" --depth "$DEPTH" \
+    --rollout 4 8 --epochs "$EPOCHS1" "$EPOCHS2" \
+    --batch-size "$BATCH" --max-samples "$MAXSAMP" \
     --train-years 2020 2021 \
-    --device cuda \
-    --outdir o96_gpu
+    --device cuda --outdir "$OUT"
 
-$PY -m ailand.evaluate \
-    --profile o96 --preset "v1+fluxes" --data data/o96_full.zarr \
-    --temporal --modeldir o96_gpu --npoints 200 --quiet --no-plot
+echo "=== evaluation: pooled over $NPOINTS_EVAL points, held-out 2022 ==="
+$PY -u -m ailand.evaluate \
+    --profile o96 --preset "$PRESET" --data "$DATA" --temporal \
+    --modeldir "$OUT" --npoints "$NPOINTS_EVAL" --quiet --no-plot
 
-# To use all four A100s, v1 uses distributed data parallelism:
+# All four A100s, as v1 does (distributed data parallelism):
 #   #SBATCH --gres=gpu:4 --ntasks-per-node=4
 #   srun $PY -m torch.distributed.run --nproc_per_node=4 -m ailand.train_mlp ...
-# train_mlp would need torch.nn.parallel.DistributedDataParallel wrapping and a
-# DistributedSampler; single-GPU is enough for the point counts here.
+# train_mlp would need a DistributedDataParallel wrapper and a DistributedSampler.
+# One A100 is ample for 2,000 points; revisit at the full 11,538 or at N320.

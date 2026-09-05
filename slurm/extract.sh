@@ -1,6 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=ailand-extract
-#SBATCH --partition=inter
+#SBATCH --partition=gpil
+#SBATCH --qos=nf
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=04:00:00

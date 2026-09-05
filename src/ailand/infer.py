@@ -79,6 +79,48 @@ def rollout(model, model_diag, meta, feats_arr, batch=None, verbose=True):
     return feats_arr, diag_arr
 
 
+def rollout_points(model, model_diag, meta, feats, batch=None, verbose=True):
+    """Step many grid points forward simultaneously.
+
+    ``feats`` is ``(npoint, time, feature)``. The rollout is independent per
+    point, so stepping them together turns npoint x ntime single-row predictions
+    into ntime batched ones -- on a GPU that is the difference between the
+    evaluation taking longer than the training and taking seconds.
+    """
+    prog_idx = meta["prog_idx"]
+    prof = config.profile(meta.get("profile", "mock"))
+    lo, hi = data.bounds_arrays(meta["prognostic"], prof["bounds"])
+    dlo, dhi = data.bounds_arrays(meta["diagnostic"], prof["diag_bounds"])
+    scalers = np.asarray(meta.get("tendency_scalers"), dtype="float32")
+    rescale = scalers if meta.get("scale_targets") else None
+    d_mean = meta.get("diag_mean")
+    d_std = meta.get("diag_std")
+    d_mean = np.asarray(d_mean, dtype="float32") if d_mean else None
+    d_std = np.asarray(d_std, dtype="float32") if d_std else None
+
+    npoint, n, _ = feats.shape
+    diag_arr = (np.full((npoint, n, len(meta["diagnostic"])), np.nan, dtype="float32")
+                if meta["diagnostic"] else np.empty((npoint, n, 0), dtype="float32"))
+
+    for t in range(n):
+        x = feats[:, t]
+        if model_diag is not None:
+            dv = model_diag.predict(x)
+            if d_mean is not None:
+                dv = dv * d_std + d_mean
+            diag_arr[:, t] = np.clip(dv, dlo, dhi)
+        if t + 1 < n:
+            pred = model.predict(x)
+            if rescale is not None:
+                pred = pred * rescale
+            feats[:, t + 1, prog_idx] = np.clip(x[:, prog_idx] + pred, lo, hi)
+        if verbose and t % 500 == 0:
+            print(f"  step {t}/{n}", end="\r", flush=True)
+    if verbose:
+        print(" " * 30, end="\r")
+    return feats, diag_arr
+
+
 def to_dataset(feats_arr, diag_arr, times, meta):
     """Package the rollout as an xarray Dataset."""
     feat = meta["features"]

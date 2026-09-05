@@ -139,23 +139,22 @@ def main(argv=None):
     else:
         points = [args.point]
 
+    # All points are stepped together: the rollout is independent per point, so
+    # batching turns npoint x ntime single-row predictions into ntime batched ones.
+    feats, times, truth, rmeta = data.rollout_inputs_multi(
+        preset=args.preset, points=points, path=args.data,
+        temporal=args.temporal, geo=args.geo, prof=args.profile,
+    )
+    meta = {**mmeta, **rmeta}
+    feats, diag_arr = infer.rollout_points(
+        model, model_diag, meta, feats, verbose=not args.quiet
+    )
     preds, truths = [], []
-    for i, pt in enumerate(points):
-        feats_arr, times, truth, rmeta = data.rollout_inputs(
-            preset=args.preset, point=pt, path=args.data,
-            temporal=args.temporal, geo=args.geo, prof=args.profile,
-        )
-        meta = {**mmeta, **rmeta}
-        feats_arr, diag_arr = infer.rollout(
-            model, model_diag, meta, feats_arr,
-            verbose=(not args.quiet) and len(points) == 1,
-        )
-        preds.append(infer.to_dataset(feats_arr, diag_arr, times, meta))
-        truths.append(truth)
-        if len(points) > 1 and (i + 1) % 10 == 0:
-            print(f"  rolled out {i + 1}/{len(points)} points", end="\r", flush=True)
+    for i in range(feats.shape[0]):
+        preds.append(infer.to_dataset(feats[i], diag_arr[i], times, meta))
+        truths.append(truth.isel(x=i))
     if len(points) > 1:
-        print(f"pooled over {len(points)} grid points" + " " * 20)
+        print(f"pooled over {len(points)} grid points")
 
     rows = score_pooled(preds, truths, args.split)
     pred = preds[0]

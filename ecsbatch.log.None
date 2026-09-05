@@ -1,0 +1,38 @@
+[ECMWF-INFO -sbatch] - -------------------------------------------------------------------------------------
+[ECMWF-INFO -sbatch] -  This is the ECMWF jobfilter
+[ECMWF-INFO -sbatch] -  +++ Please report issues using the Support portal +++
+[ECMWF-INFO -sbatch] -  +++ https://support.ecmwf.int                     +++
+[ECMWF-INFO -sbatch] -  /usr/local/bin/ecsbatch: size: 54518, mtime: Thu Aug  6 13:29:49 2026
+[ECMWF-INFO -sbatch] - -------------------------------------------------------------------------------------
+[ECMWF-INFO -sbatch] - Time at submit: Sat Sep  5 13:15:02 2026 (1788614102.8268638) on ac6-102.bullx:/etc/ecmwf/nfs/dh2_perm_a/pad/ailand
+[ECMWF-INFO -sbatch] - --- SLURM VARIABLES ---
+[ECMWF-INFO -sbatch] - EC_CLUSTER=ac
+[ECMWF-INFO -sbatch] - SLURM_EXPORT_ENV=ALL
+[ECMWF-INFO -sbatch] - SBATCH_EXPORT=NONE
+[ECMWF-INFO -sbatch] - -----------------------
+[ECMWF-INFO -sbatch] - jobscript: /etc/ecmwf/nfs/dh2_perm_a/pad/ailand/slurm/extract.sh
+[ECMWF-INFO -sbatch] - --- SCRIPT OPTIONS ---
+[ECMWF-INFO -sbatch] - #SBATCH --job-name=ailand-extract
+[ECMWF-INFO -sbatch] - #SBATCH --partition=inter
+[ECMWF-INFO -sbatch] - #SBATCH --qos=nf
+[ECMWF-INFO -sbatch] - #SBATCH --cpus-per-task=8
+[ECMWF-INFO -sbatch] - #SBATCH --mem=64G
+[ECMWF-INFO -sbatch] - #SBATCH --time=04:00:00
+[ECMWF-INFO -sbatch] - #SBATCH --output=slurm/logs/%x.%j.out
+[ECMWF-INFO -sbatch] - -----------------------
+[ECMWF-INFO -sbatch] - --- POST-PROCESSED OPTIONS ---
+[ECMWF-INFO -sbatch] - ARG --positional=['slurm/extract.sh']
+[ECMWF-INFO -sbatch] - ARG --cpus_per_task=8
+[ECMWF-INFO -sbatch] - ARG --job_name=ailand-extract
+[ECMWF-INFO -sbatch] - ARG --output=slurm/logs/%x.%j.out
+[ECMWF-INFO -sbatch] - ARG --partition=inter
+[ECMWF-INFO -sbatch] - ARG --qos=nf
+[ECMWF-INFO -sbatch] - ARG --time=04:00:00
+[ECMWF-INFO -sbatch] - ARG --mem=64G
+[ECMWF-INFO -sbatch] - ------------------------------
+[ECMWF-INFO -sbatch] - jobtag: pad-ailand-extract-1x8-/etc/ecmwf/nfs/dh2_perm_a/pad/ailand/slurm/logs/ailand-extract._JOBID_.out
+[ECMWF-INFO -sbatch] - ['/usr/bin/sbatch', '--cpus-per-task=8', '--job-name=ailand-extract', '--output=slurm/logs/%x.%j.out', '--partition=inter', '--qos=nf', '--time=04:00:00', '--mem=64G', '--licenses=h2resw01', '--export=EC_user_time_limit=04:00:00', '/etc/ecmwf/nfs/dh2_perm_a/pad/ailand/slurm/extract.sh']
+[ECMWF-INFO -sbatch] - sbatch executed on ac
+[ECMWF-INFO -sbatch] - Job queued on ac using method local
+[ECMWF-ERROR-sbatch] - ac: sbatch: error: This partition and QoS is for ecinteractive or jupyterhub jobs only.
+sbatch: error: Batch job submission failed: Requested operation is presently disabled
