@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ailand"
+version = "0.1.0"
+description = "aiLand v0 - XGBoost emulator of the ecLand land surface model"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "xarray",
+    "zarr",
+    "dask",
+    "xgboost",
+    "scikit-learn",
+    "matplotlib",
+    "netCDF4",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

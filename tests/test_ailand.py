@@ -1,0 +1,95 @@
+"""Tests for the feature/target construction and rollout mechanics.
+
+The upstream ec-land-db tests cover only the GRIB->Zarr ingest side; nothing
+tested the ML path, which is where the v0 bugs were.
+"""
+
+import numpy as np
+import pytest
+
+from ailand import config, data, infer, train
+
+
+@pytest.mark.parametrize("preset", sorted(config.PRESETS))
+def test_presets_resolve(preset):
+    prog, diag, feat = config.resolve(preset)
+    assert prog, "every preset must have prognostic variables"
+    assert set(prog).issubset(feat), "prognostic state must be part of the input vector"
+    assert not set(diag) & set(feat), (
+        "diagnostic variables must NOT be inputs: feeding them back from the "
+        "truth data would leak information into the rollout"
+    )
+    assert set(prog).issubset(config.BOUNDS), "every prognostic needs physical bounds"
+
+
+def test_snowc_bound_is_percent():
+    # snowc is 0-100 in this store, not a fraction. A [0, 1] bound silently
+    # destroys the entire snow signal.
+    assert config.BOUNDS["snowc"] == (0.0, 100.0)
+    ds = data.open_store()
+    assert float(ds["snowc"].max().compute()) > 1.0
+
+
+def test_targets_are_increments():
+    X, y_prog, _y_diag, meta = data.training_arrays(preset="v1", years=("2020", "2020"))
+    assert X.shape[0] == y_prog.shape[0]
+    assert X.shape[1] == len(meta["features"])
+    assert y_prog.shape[1] == len(meta["prognostic"])
+    # Increments must be far smaller than the absolute state they came from.
+    state = X[:, meta["prog_idx"]]
+    assert np.abs(y_prog).mean() < np.abs(state).mean()
+
+
+def test_prognostic_indices_are_name_based():
+    # The v0 notebook assumed the targets were the last N features in order.
+    # Reordering must not change which columns are updated.
+    prog, _diag, feat = config.resolve("v1")
+    idx = [feat.index(v) for v in prog]
+    assert [feat[i] for i in idx] == prog
+
+
+def test_bounds_arrays_align():
+    prog, _, _ = config.resolve("v0+snow")
+    lo, hi = data.bounds_arrays(prog)
+    assert lo.shape == hi.shape == (len(prog),)
+    assert np.all(lo <= hi)
+    # Soil temperature must not be clipped at zero, as v0 did to every variable.
+    assert lo[prog.index("stl1")] == -np.inf
+
+
+def test_rollout_respects_bounds_and_shape():
+    prog, diag, feat = config.resolve("v1")
+    feats_arr, times, truth, meta = data.rollout_inputs(preset="v1", point=0)
+    meta = {**meta, "tendency_scalers": None, "scale_targets": False}
+    n = len(feats_arr)
+
+    class ConstantModel:
+        """Always predicts a large positive increment, to drive into the bounds."""
+
+        def predict(self, x):
+            return np.full((len(x), len(prog)), 1e6, dtype="float32")
+
+    out, diag_arr = infer.rollout(ConstantModel(), None, meta, feats_arr, verbose=False)
+    assert out.shape[0] == n
+    lo, hi = data.bounds_arrays(prog)
+    state = out[1:, meta["prog_idx"]]
+    assert np.all(state <= hi + 1e-3), "upper bounds not enforced"
+    assert np.isfinite(state[:, prog.index("snowc")]).all()
+    assert state[:, prog.index("snowc")].max() <= 100.0
+
+
+def test_objective_is_set_explicitly():
+    # v0 passed `objevtive=` (a typo), which XGBoost silently accepted as an
+    # unused kwarg, leaving the objective at the default.
+    model = train.build_model(n_estimators=2, subsample=0.6, learning_rate=None, seed=0)
+    assert model.get_xgb_params()["objective"] == "reg:squarederror"
+    assert "objevtive" not in model.get_params()
+
+
+def test_tendency_scalers_span_orders_of_magnitude():
+    _X, y_prog, _y, meta = data.training_arrays(preset="v0+snow", years=("2020", "2020"))
+    s = data.tendency_scalers(y_prog)
+    assert np.all(s > 0)
+    # This spread is the reason an unscaled summed-squared-error loss is
+    # dominated by soil temperature and snow.
+    assert s.max() / s.min() > 1e3

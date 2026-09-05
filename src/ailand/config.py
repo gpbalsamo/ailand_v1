@@ -1,0 +1,121 @@
+"""Paths, variable sets and physical bounds."""
+
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[2]
+DATA = REPO / "data" / "ecland_cy49r2_2020_2022.zarr"
+MODELS = REPO / "models"
+FIGURES = REPO / "figures"
+
+SEED = 42
+
+#: Static / climatological descriptors. Inputs only.
+STATIC = [
+    "clim_CLAKE",
+    "clim_Ctype",
+    "clim_cu",
+    "clim_cvh",
+    "clim_cvl",
+    "clim_geopot",
+    "clim_sdfor",
+    "clim_sdor",
+    "clim_sotype",
+    "clim_tvh",
+    "clim_tvl",
+    "clim_z0m",
+    "lai_hv",
+    "lai_lv",
+]
+
+#: Meteorological forcing. Inputs only.
+MET = [
+    "met_ctpf",
+    "met_lwdown",
+    "met_psurf",
+    "met_qair",
+    "met_rainf",
+    "met_swdown",
+    "met_snowf",
+    "met_tair",
+    "met_wind_e",
+    "met_wind_n",
+]
+
+#: Variable-set presets: (prognostic, diagnostic).
+#:
+#: Prognostic variables are predicted as 6-hourly increments, added to the
+#: previous state and fed back into the input vector at the next step.
+#: Diagnostic variables are predicted as absolute values, re-diagnosed from the
+#: prognostic state at every step, and never fed back -- feeding them back from
+#: the truth data would leak information into the rollout.
+PRESETS = {
+    # Exactly the original ec-land-db notebook.
+    "v0": (
+        ["swvl1", "swvl2", "swvl3", "stl1", "stl2", "stl3", "snowc", "sro", "ssro"],
+        [],
+    ),
+    # v0 plus the snow prognostics and two diagnostics already in the store.
+    "v0+snow": (
+        ["swvl1", "swvl2", "swvl3", "stl1", "stl2", "stl3", "snowc", "sd", "rsn",
+         "sro", "ssro"],
+        ["skt", "aco2gpp"],
+    ),
+    # The aiLand v1 state vector (Raoult et al. 2026, Table 1): only soil
+    # temperature/moisture and snow cover are prognostic. Note that v1 promotes
+    # snowc to prognostic although it is diagnostic in ecLand, and drops runoff.
+    "v1": (
+        ["swvl1", "swvl2", "swvl3", "stl1", "stl2", "stl3", "snowc"],
+        ["skt", "aco2gpp"],
+    ),
+}
+
+DEFAULT_PRESET = "v0+snow"
+
+#: Physical bounds applied to prognostic states after each update, as v1 does in
+#: post-processing. ``None`` means unbounded on that side.
+#:
+#: NOTE: snowc is a PERCENTAGE in this store (0-99.9), not a fraction. The v0
+#: notebook's "Snow Cover Fraction (-)" label is wrong and a [0, 1] bound on it
+#: destroys the signal entirely.
+BOUNDS = {
+    "swvl1": (0.0, None),
+    "swvl2": (0.0, None),
+    "swvl3": (0.0, None),
+    "stl1": (None, None),
+    "stl2": (None, None),
+    "stl3": (None, None),
+    "snowc": (0.0, 100.0),
+    "sd": (0.0, None),
+    "rsn": (50.0, 450.0),
+    "sro": (0.0, None),
+    "ssro": (0.0, None),
+}
+
+UNITS = {
+    "swvl1": "Soil Moisture (m3 m-3)",
+    "swvl2": "Soil Moisture (m3 m-3)",
+    "swvl3": "Soil Moisture (m3 m-3)",
+    "stl1": "Soil Temperature (K)",
+    "stl2": "Soil Temperature (K)",
+    "stl3": "Soil Temperature (K)",
+    "snowc": "Snow Cover (%)",
+    "sd": "Snow Depth (m water eq.)",
+    "rsn": "Snow Density (kg m-3)",
+    "sro": "Surface Runoff (m)",
+    "ssro": "Subsurface Runoff (m)",
+    "skt": "Skin Temperature (K)",
+    "aco2gpp": "GPP (kg m-2 s-1)",
+}
+
+
+def features(prognostic):
+    """Input vector: statics + meteorological forcing + previous prognostic state."""
+    return STATIC + MET + list(prognostic)
+
+
+def resolve(preset):
+    """Return ``(prognostic, diagnostic, features)`` for a named preset."""
+    if preset not in PRESETS:
+        raise KeyError(f"unknown preset {preset!r}; choose from {sorted(PRESETS)}")
+    prog, diag = PRESETS[preset]
+    return list(prog), list(diag), features(prog)

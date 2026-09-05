@@ -16,26 +16,42 @@ The first commit here is the untouched v0 notebook
 ## Layout
 
 ```
-data/          mock ecLand Zarr store (10 land points, 2020-2022, 6-hourly, 37 vars)
-docs/papers/   aiLand v1 preprint (PDF + extracted text)
-docs/images/   reference figures from ec-land-db
-docs/upstream/ the upstream README / setup.py / config.yaml / stale environment.yml
-notebooks/upstream/  the sibling ec-land-db notebooks (zarr store creation, exploration)
-models/        trained model artefacts (gitignored)
-figures/       generated figures (gitignored)
-train_ai_land_example.ipynb   the working notebook
+src/ailand/       the package: config, data, train, infer, evaluate
+tests/            tests for the ML path (the upstream repo tested only ingest)
+data/             mock ecLand Zarr store (10 land points, 2020-2022, 6-hourly, 37 vars)
+docs/papers/      aiLand v1 preprint (PDF + extracted text)
+docs/images/      reference figures from ec-land-db
+docs/upstream/    upstream README / setup.py / config.yaml / stale environment.yml
+notebooks/upstream/  sibling ec-land-db notebooks + the pristine v0 notebook
+models/           trained models, metadata and rollouts (gitignored)
+figures/          generated figures (gitignored)
+train_ai_land_example.ipynb   interactive front-end to the package
 ```
 
-Everything the notebook needs is now inside this directory — no relative paths
-escaping to `../tests/mock_data`, and no dependency on `/perm/pad/ec-land-db`.
+Everything the code needs is inside this directory — no relative paths escaping to
+`../tests/mock_data`, and no dependency on `/perm/pad/ec-land-db`.
 
 ## Running it
 
 ```bash
 python3 -m venv --system-site-packages .venv && source .venv/bin/activate
-pip install -r requirements.txt
-jupyter lab train_ai_land_example.ipynb
+pip install -e .
 ```
+
+Training, inference and evaluation are separate entry points, so each stage can be
+run, cached and swapped independently:
+
+```bash
+python -m ailand.train    --preset v1                  # fit, save to models/v1/
+python -m ailand.infer    --preset v1 --point 5        # autoregressive rollout -> netCDF
+python -m ailand.evaluate --preset v1                  # score held-out year + plot
+pytest tests/
+```
+
+Useful flags: `--scale-targets` (v1's tendency scalers), `--n-estimators`,
+`--train-years`, `--split`, `--data`. `train_ai_land_example.ipynb` is a thin
+interactive front-end over the same functions; the pristine upstream notebook is
+kept at `notebooks/upstream/train_ai_land_example_v0_pristine.ipynb`.
 
 **Kernel caveat.** The notebook's recorded kernel is `ec_land_db`, but
 `~/.local/share/jupyter/kernels/ec_land_db/kernel.json` points at the *system*
@@ -59,43 +75,60 @@ almost certainly no longer solves; it is kept in `docs/upstream/` for reference 
 | Variable-specific physical bounds | v0 applied `np.clip(x, 0, None)` to everything, which is meaningless for soil temperature in K and misses the upper bound on snow cover |
 | Diagnostic branch (`skt`, `aco2gpp`) | Predicted as absolute values and *not* fed back, mirroring v1's diagnostic head. Feeding them back from truth would leak into the rollout |
 | Scoring cell on the held-out year | v0 judged the rollout by eye from one figure; no metric was ever computed on 2022 |
-| `PRESET` switch | Lets you compare the v0, v0+snow and v1 state vectors directly |
+| Split into `train` / `infer` / `evaluate` scripts | A notebook cannot be run per-stage, cached, or tested |
+| Presets for the v0 / v0+snow / v1 state vectors | Makes the state-vector choice measurable rather than assumed |
+| `tests/` for the ML path | Upstream tested only the GRIB→Zarr ingest |
 
-**`snowc` in this store is a percentage (0–99.9), not a fraction** — the v0 plot
-label "Snow Cover Fraction (-)" is wrong, and any `[0,1]` bound on it destroys the signal.
+## Which state vector actually works
 
-## Does adding the snow prognostics help?
+Three variable-set presets are built in (`ailand/config.py`), all trained
+identically — 1000 trees, 2020–21, scored on the 2022 rollout at point `x=5`:
 
-The mock store carries four variables v0 never used: `sd`, `rsn`, `skt`, `aco2gpp`.
-Adding `sd`/`rsn` to the prognostic state looks like an obvious win — `snowc` cannot
-close a snow budget without them. Measured on the 2022 rollout at point `x=5`, it is not:
+* **`v0`** — the original 9 targets, runoff included.
+* **`v0+snow`** — adds the snow prognostics `sd`/`rsn` and the diagnostics `skt`/`aco2gpp`.
+* **`v1`** — the aiLand v1 state vector (Raoult et al. 2026, Table 1): only
+  `stl1-3`, `swvl1-3` and `snowc` are prognostic, and runoff is dropped entirely.
 
-| variable | v0 RMSE | v0 R² | +snow RMSE | +snow R² |
-|---|---|---|---|---|
-| swvl1 | 0.0505 | **0.632** | 0.0416 | **0.750** |
-| swvl2 | 0.0836 | −0.513 | 0.0704 | −0.071 |
-| swvl3 | 0.0896 | −1.238 | 0.0948 | −1.502 |
-| stl1 | 2.997 | **0.834** | 3.486 | **0.775** |
-| stl2 | 2.162 | 0.880 | 2.202 | 0.876 |
-| stl3 | 1.151 | 0.947 | 1.464 | 0.914 |
-| snowc | 2.296 | **0.560** | 5.462 | **−1.490** |
-| sd | – | – | 0.000317 | −0.189 |
-| rsn | – | – | 51.37 | −3.284 |
-| sro | 8.21e−05 | −14.40 | 7.93e−05 | −13.35 |
-| ssro | 2.22e−04 | 0.339 | 2.19e−04 | 0.354 |
+Held-out 2022 R² (higher is better; negative means worse than predicting the mean):
 
-Soil moisture improves clearly; soil temperature degrades slightly; **snow cover gets
-much worse**, because `sd` and `rsn` themselves roll out poorly (R² −0.19 and −3.28)
-and then feed that error back into `snowc`.
+| variable | v0 | v0+snow | **v1** |
+|---|---|---|---|
+| `swvl1` | 0.621 | 0.750 | **0.845** |
+| `swvl2` | −0.545 | −0.071 | **0.741** |
+| `swvl3` | −1.235 | −1.502 | **0.668** |
+| `stl1` | 0.842 | 0.775 | **0.939** |
+| `stl2` | 0.880 | 0.876 | **0.987** |
+| `stl3` | 0.946 | 0.914 | **0.994** |
+| `snowc` | 0.551 | −1.490 | **0.713** |
+| `sd` | – | −0.189 | – |
+| `rsn` | – | −3.284 | – |
+| `sro` | −14.405 | −13.346 | – |
+| `ssro` | 0.422 | 0.354 | – |
+| `skt` | – | 0.775 | 0.704 |
+| `aco2gpp` | – | −0.130 | −0.082 |
+| **mean** | **−1.325** | **−1.197** | **+0.723** |
 
-This is exactly the choice v1 made and we did not: in v1 (Table 1) the prognostic
-state is *only* `stl1-3`, `swvl1-3` and `snowc`, with **`snowc` promoted to prognostic
-even though it is diagnostic in ecLand**, and `sd`/`rsn` left out of the state entirely.
-Set `PRESET = "v1"` to run that configuration.
+Two findings, both of which reproduce v1's design decisions from the bottom up:
 
-Note also how weak the v0 numbers are once measured: negative R² on `swvl2`, `swvl3`
-and `sro` in *both* configurations. The v0 figure looks convincing because the plotted
-range is dominated by the seasonal cycle; the skill against ec-land is not there.
+**1. Runoff does not belong in the prognostic state.** `sro`/`ssro` are fluxes, not
+states. Their own rollout is worthless (`sro` R² ≈ −14), and because they also sit in
+the *input* vector, that noise propagates into everything downstream. Dropping them
+takes `swvl2` from −0.545 to 0.741 and `swvl3` from −1.235 to 0.668. This single
+change is worth more than any amount of extra training.
+
+**2. Adding the snow prognostics makes snow worse, not better.** Carrying `sd` and
+`rsn` looks obviously right — `snowc` cannot close a snow budget without them — but
+they roll out poorly themselves (R² −0.19 and −3.28) and feed that error straight back
+into `snowc`, which collapses from 0.551 to −1.490. v1 makes the opposite choice:
+`snowc` is **promoted to prognostic even though it is diagnostic in ecLand**, and the
+underlying snow prognostics are left out of the state entirely.
+
+Note how weak v0 is once measured at all: mean held-out R² of −1.325, with negative
+skill on two of three soil moisture layers. The v0 figure looks convincing because the
+plotted range is dominated by the seasonal cycle.
+
+**`snowc` in this store is a percentage (0–99.9), not a fraction** — the v0 plot label
+"Snow Cover Fraction (-)" is wrong, and a `[0,1]` bound on it destroys the signal.
 
 ## aiLand v0 vs aiLand v1
 
@@ -135,14 +168,21 @@ They are far too large to copy here, so they are referenced rather than migrated
 
 ## Suggested next steps
 
-1. **Add the temporal/astronomical forcings** (time of day, day of year, TOA insolation).
-   v1 reports these specifically improve soil temperature, and they are trivial to compute.
-2. **Normalise the increment targets by their own standard deviation.** Target std spans
-   four orders of magnitude here (`stl1` 2.54 K vs `ssro` 1.5e−4 m), so a single summed
-   RMSE is driven almost entirely by temperature and snow. This is v1's "tendency scaler".
+1. **Normalise the increment targets** (`--scale-targets` is already wired). Target std
+   spans four orders of magnitude, so an unweighted loss is driven almost entirely by
+   soil temperature and snow. This is v1's tendency scaler.
+2. **Add the temporal/astronomical forcings** — time of day, day of year, TOA insolation.
+   v1 reports these specifically improve soil temperature, they are trivial to compute,
+   and the `/lus` stores already carry them precomputed as `cos/sin_julian_day`,
+   `cos/sin_local_time` and `insolation`.
 3. **Hold out grid points, not just time.** Point `x=5` is in the training set; only 2022
    is genuinely independent.
 4. **Add multi-step rollout loss.** Single-step training is why errors compound; v1's
-   two-phase R=4 → R=8 schedule is the direct fix.
-5. **Switch to a small MLP in torch** (already installed) once the above is in place —
-   that is the actual v0 → v1 jump, and it is what buys differentiability.
+   two-phase R=4 → R=8 schedule is the direct fix — and it is not expressible in XGBoost,
+   which is one concrete reason v1 is an MLP.
+5. **Switch to a small MLP in torch** (already installed) once the above is in place.
+   That is the actual v0 → v1 jump, and it is what buys differentiability — the property
+   v1 needs for data assimilation and parameter estimation, and the one thing gradient-
+   boosted trees can never provide.
+6. **Fix `aco2gpp`.** It is the one variable with negative skill in every preset. GPP is
+   not a memoryless function of the current state and instantaneous forcing.

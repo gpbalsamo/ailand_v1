@@ -1,0 +1,103 @@
+##### PRESET v0
+preset v0: 29230 samples, 33 features, 9 prognostic + 0 diagnostic targets
+Fitting XGB model for prognostic increments...
+
+Wrote /etc/ecmwf/nfs/dh2_perm_a/pad/ailand/models/v0
+NOTE: eval_set above is the TRAINING set, so those scores are in-sample. Run `python -m ailand.evaluate` for skill on the held-out year.
+
+variable   period          RMSE         bias        R2
+------------------------------------------------------
+swvl1      train       0.056418     -0.01228     0.502
+swvl1      test        0.051247     -0.01176     0.621
+swvl2      train       0.075946     0.059873    -0.421
+swvl2      test        0.084504     0.070709    -0.545
+swvl3      train       0.095511     0.089365    -1.761
+swvl3      test        0.089554      0.08448    -1.235
+stl1       train         2.3579      -0.3953     0.878
+stl1       test          2.9214     -0.96077     0.842
+stl2       train         2.0462      -1.2705     0.875
+stl2       test          2.1662      -1.5884     0.880
+stl3       train          1.232     -0.94173     0.930
+stl3       test          1.1676     -0.92266     0.946
+snowc      train         1.1194      0.22966     0.990
+snowc      test          2.3198      0.38061     0.551
+sro        train     0.00011034   7.8999e-05   -14.726
+sro        test      8.2128e-05   7.9475e-05   -14.405
+ssro       train     0.00022988  -6.0291e-05     0.397
+ssro       test      0.00020726  -4.0677e-05     0.422
+
+Held-out (2022-01-01 onwards): mean R2 = -1.325
+NEGATIVE R2 (worse than predicting the mean): swvl2, swvl3, sro
+Wrote /etc/ecmwf/nfs/dh2_perm_a/pad/ailand/figures/ec-ai-land_v0.png
+##### PRESET v0+snow
+preset v0+snow: 29230 samples, 35 features, 11 prognostic + 2 diagnostic targets
+Fitting XGB model for prognostic increments...
+Fitting XGB model for diagnostic variables...
+
+Wrote /etc/ecmwf/nfs/dh2_perm_a/pad/ailand/models/v0_snow
+NOTE: eval_set above is the TRAINING set, so those scores are in-sample. Run `python -m ailand.evaluate` for skill on the held-out year.
+
+variable   period          RMSE         bias        R2
+------------------------------------------------------
+swvl1      train       0.050017     0.011903     0.609
+swvl1      test        0.041645    0.0043844     0.750
+swvl2      train       0.066635     0.055597    -0.094
+swvl2      test        0.070368     0.061817    -0.071
+swvl3      train        0.11231      0.10486    -2.818
+swvl3      test        0.094752     0.092993    -1.502
+stl1       train         2.7256     -0.71303     0.837
+stl1       test          3.4864      -1.4427     0.775
+stl2       train         1.9676      -1.4114     0.884
+stl2       test          2.2017      -1.5799     0.876
+stl3       train         1.3264      -1.0633     0.918
+stl3       test          1.4639      -1.0952     0.914
+snowc      train         2.2354      0.74827     0.961
+snowc      test          5.4617       1.0602    -1.490
+sd         train      0.0026043  -0.00014478     0.488
+sd         test      0.00031673   0.00016125    -0.189
+rsn        train         44.469       5.7222    -2.426
+rsn        test          51.372       5.4067    -3.284
+sro        train     7.9318e-05   7.4082e-05    -7.126
+sro        test      7.9254e-05   7.6983e-05   -13.346
+ssro       train     0.00025739  -6.7559e-05     0.244
+ssro       test      0.00021907   -3.689e-05     0.354
+skt        train         3.4364      -0.1535     0.787
+skt        test           3.718     -0.63192     0.775
+aco2gpp    train      0.0047517  -0.00017692    -0.105
+aco2gpp    test        0.004934  -0.00030489    -0.130
+
+Held-out (2022-01-01 onwards): mean R2 = -1.197
+NEGATIVE R2 (worse than predicting the mean): swvl2, swvl3, snowc, sd, rsn, sro, aco2gpp
+Wrote /etc/ecmwf/nfs/dh2_perm_a/pad/ailand/figures/ec-ai-land_v0_snow.png
+##### PRESET v1
+preset v1: 29230 samples, 31 features, 7 prognostic + 2 diagnostic targets
+Fitting XGB model for prognostic increments...
+Fitting XGB model for diagnostic variables...
+
+Wrote /etc/ecmwf/nfs/dh2_perm_a/pad/ailand/models/v1
+NOTE: eval_set above is the TRAINING set, so those scores are in-sample. Run `python -m ailand.evaluate` for skill on the held-out year.
+
+variable   period          RMSE         bias        R2
+------------------------------------------------------
+swvl1      train       0.018423     0.011918     0.947
+swvl1      test        0.032737     0.023756     0.845
+swvl2      train       0.026695     0.021155     0.824
+swvl2      test        0.034575     0.029187     0.741
+swvl3      train       0.023683     0.021156     0.830
+swvl3      test         0.03453     0.029357     0.668
+stl1       train         1.3689     -0.22019     0.959
+stl1       test          1.8224     -0.35789     0.939
+stl2       train         0.4004      -0.1823     0.995
+stl2       test         0.71112     -0.23913     0.987
+stl3       train        0.29053     -0.18822     0.996
+stl3       test         0.38281     -0.11071     0.994
+snowc      train        0.48908     0.069243     0.998
+snowc      test          1.8545     0.099859     0.713
+skt        train         4.2879     -0.16416     0.668
+skt        test          4.2643     -0.20104     0.704
+aco2gpp    train      0.0046687   5.8168e-05    -0.067
+aco2gpp    test       0.0048279  -2.5302e-06    -0.082
+
+Held-out (2022-01-01 onwards): mean R2 = 0.723
+NEGATIVE R2 (worse than predicting the mean): aco2gpp
+Wrote /etc/ecmwf/nfs/dh2_perm_a/pad/ailand/figures/ec-ai-land_v1.png
