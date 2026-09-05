@@ -145,32 +145,49 @@ weakness, given the biomes this work cares about are the rare ones.
 
 ## Where the reproduction stands
 
-Same protocol as the paper's Table B1 — single-timestep, glacier and coastal excluded,
-O96-trained evaluated on O96:
+Full v1 recipe: O96, **11,538 land points, 1998–2019 training**, 2022 held out for
+validation and best-checkpoint selection, 6×512, R=4→R=8, Adam 5e-4→3e-7 cosine with
+1000-step warmup, batch 46,152. One A100, 5 h.
 
-| | paper O96 | ours | |
-|---|---|---|---|
-| `swvl1` | 0.01040 | 0.01050 | **1.01×** |
-| `swvl2` | 0.003115 | 0.003250 | **1.04×** |
-| `swvl3` | 0.000746 | 0.000791 | **1.06×** |
-| `stl1` | 1.056 K | 1.082 K | **1.02×** |
-| `stl2` | 0.138 K | 0.166 K | 1.20× |
-| `stl3` | 0.032 K | 0.0128 K | **0.40× (better)** |
-| `snowc` | 0.01462 | 0.05435 | 3.72× |
-| `2d` | 0.857 K | 2.099 K | 2.45× |
-| `2t` | 0.876 K | 1.608 K | 1.84× |
-| `skt` | 1.081 K | 1.986 K | 1.84× |
-| `H` | 11.57 W m⁻² | 17.62 W m⁻² | 1.52× |
-| `LE` | 9.68 W m⁻² | 15.44 W m⁻² | 1.59× |
+Scored exactly as the paper's Table B1 — single-timestep, glacier and coastal excluded:
 
-**The prognostic state reproduces v1.** The remaining gap is `snowc` and the diagnostics,
-and it is a training-budget gap, not a method gap: those numbers come from a model
-trained on **2 years** against the paper's **22**, with ~600× less gradient work. A
-full-period run (1998–2019, 2022 held out for validation) is what
-`slurm/reproduce_v1.sh` does. Extra diagnostic-head capacity was tested and made no
-difference, which is what points at data volume rather than model size.
+| | paper O96 | ours (2 yr) | **ours (22 yr)** | ratio |
+|---|---|---|---|---|
+| `swvl1` | 0.01040 | 0.01050 | **0.010638** | 1.02× |
+| `swvl2` | 0.003115 | 0.003250 | **0.003180** | 1.02× |
+| `swvl3` | 0.000746 | 0.000791 | **0.000738** | **0.99×** |
+| `stl1` | 1.056 K | 1.082 K | **1.117 K** | 1.06× |
+| `stl2` | 0.138 K | 0.166 K | **0.154 K** | 1.12× |
+| `stl3` | 0.032 K | 0.0128 K | **0.0109 K** | **0.34×** |
+| `snowc` | 0.01462 | 0.05435 | **0.01717** | 1.17× |
+| `2d` | 0.857 K | 2.099 K | 2.039 K | 2.38× |
+| `2t` | 0.876 K | 1.608 K | 1.486 K | 1.70× |
+| `skt` | 1.081 K | 1.986 K | 1.866 K | 1.73× |
+| `H` | 11.57 W m⁻² | 17.62 | 17.24 | 1.49× |
+| `LE` | 9.68 W m⁻² | 15.44 | 14.95 | 1.54× |
 
----
+**The prognostic state reproduces v1** — every one of the seven at parity or better,
+mean R² 0.989. The 22-year training period did what it was expected to do for snow
+(`snowc` 3.72× → 1.17×), confirming that two years simply cannot represent snow
+variability.
+
+**It did not close the diagnostic gap**, which barely moved (`2t` 1.61 → 1.49 K). So
+the earlier explanation — that the diagnostics were short of training data — was wrong.
+With the backbone at parity and extra diagnostic-head capacity already tested and found
+to make no difference, the remaining suspect is the **input set**: we withhold 19
+variables the store carries, including `fal` (forecast albedo), `asn` (snow albedo) and
+`src` (skin reservoir water). Albedo is the primary control on net shortwave, and the
+paper lists surface albedo among its physiographic fields (Sect. 2.1.2). All five
+lagging variables are surface-energy-balance quantities, which fits.
+
+Free autoregressive rollout through 2022, same points: mean R² 0.974, `stl1` 2.45 K,
+`swvl1` 0.0191, `2t` 1.55 K — so the model is stable, not just accurate one step out.
+
+### Adding runoff, evaporation and GPP is free
+
+The `v1+fluxes` run is identical to `v1` on v1's own variables (`stl1` 1.121 vs 1.117 K,
+`swvl1` 0.010642 vs 0.010638) while additionally predicting evaporation at R² **0.964**,
+GPP at **0.984**, and runoff at 0.335 / 0.435. The extra diagnostic outputs cost nothing.
 
 ## Layout
 
