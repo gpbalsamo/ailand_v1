@@ -122,6 +122,35 @@ def rollout_points(model, model_diag, meta, feats, batch=None, verbose=True):
     return feats, diag_arr
 
 
+def single_step(model, model_diag, meta, feats):
+    """Teacher-forced one-step prediction: the true state is supplied every step.
+
+    This is the protocol behind the paper's Table B1. It measures the learned
+    mapping without any error accumulation, so it is the right comparison for
+    those numbers -- and the wrong one for judging autoregressive stability.
+    """
+    prog_idx = meta["prog_idx"]
+    prof = config.profile(meta.get("profile", "mock"))
+    lo, hi = data.bounds_arrays(meta["prognostic"], prof["bounds"])
+    dlo, dhi = data.bounds_arrays(meta["diagnostic"], prof["diag_bounds"])
+    scalers = np.asarray(meta.get("tendency_scalers"), dtype="float32")
+    rescale = scalers if meta.get("scale_targets") else None
+
+    npoint, n, _ = feats.shape
+    out = feats.copy()
+    diag_arr = (np.full((npoint, n, len(meta["diagnostic"])), np.nan, dtype="float32")
+                if meta["diagnostic"] else np.empty((npoint, n, 0), dtype="float32"))
+    for t in range(n - 1):
+        x = feats[:, t]
+        pred = model.predict(x)
+        if rescale is not None:
+            pred = pred * rescale
+        out[:, t + 1, prog_idx] = np.clip(x[:, prog_idx] + pred, lo, hi)
+        if model_diag is not None:
+            diag_arr[:, t + 1] = np.clip(model_diag.predict(x), dlo, dhi)
+    return out, diag_arr
+
+
 def to_dataset(feats_arr, diag_arr, times, meta):
     """Package the rollout as an xarray Dataset."""
     feat = meta["features"]

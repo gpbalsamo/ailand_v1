@@ -218,6 +218,29 @@ def rollout_inputs(preset=config.DEFAULT_PRESET, point=5, years=None, path=None,
     return feats_arr, sel.time.values, truth, meta
 
 
+def land_mask(ds, exclude_coastal=True, exclude_glacier=True,
+              lsm_threshold=0.9, snow_threshold=0.9):
+    """Point indices to keep, following v1's evaluation protocol.
+
+    The paper computes all metrics "with glacier and coastal points excluded
+    throughout" (Sect. 2.3.1). Both matter here: on the O96 land set they are
+    22.3% of points, and soil temperature error on them is ~3x the error
+    elsewhere (stl1 4.49 K against 1.58 K), so including them inflates every
+    prognostic score.
+
+    :param lsm_threshold: cells with a land fraction below this are coastal
+    :param snow_threshold: cells whose annual-mean snow cover exceeds this are
+        treated as permanently glaciated
+    """
+    n = ds.sizes["x"]
+    keep = np.ones(n, dtype=bool)
+    if exclude_coastal and "lsm_0" in ds:
+        keep &= ds["lsm_0"].isel(time=0).values >= lsm_threshold
+    if exclude_glacier and "snowc" in ds:
+        keep &= ds["snowc"].mean("time").values <= snow_threshold
+    return np.flatnonzero(keep)
+
+
 def bounds_arrays(names, table=None, prof=None):
     """Lower/upper bound vectors aligned with ``names``.
 

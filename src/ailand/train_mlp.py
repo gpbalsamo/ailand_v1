@@ -26,36 +26,47 @@ import torch.nn as nn
 from . import config, data, mlp
 
 
-def build_windows(ds, feat, prog, diag, steps, max_samples=None):
-    """Build ``(sample, step, feature)`` rollout windows over all grid points.
+def build_windows(ds, feat, prog, diag, steps, max_samples=None, point_block=250,
+                  seed=0, quiet=False):
+    """Build ``(sample, step, feature)`` rollout windows, a block of points at a time.
 
-    Each window is ``steps`` consecutive 6-hourly timesteps at one grid point.
-    Windows are subsampled by index *before* being materialised -- the full set
-    for a global store is far too large to hold (2000 points x 2900 windows x
-    4 steps x 45 features is several GB).
+    Materialising every point for every time is not possible at the scale the
+    paper trains on: 11,538 points x 36,525 timesteps x 44 features is 74 GB for
+    the inputs alone. Instead each block of points is loaded, its quota of
+    windows is drawn, and the block is released.
     """
-    x = ds[feat].to_array().astype("float32").transpose("x", "time", "variable").values
-    yp = ds[prog].to_array().astype("float32").transpose("x", "time", "variable").values
-    yd = (ds[diag].to_array().astype("float32").transpose("x", "time", "variable").values
-          if diag else None)
-
-    npoint, ntime, _ = x.shape
+    npoint, ntime = ds.sizes["x"], ds.sizes["time"]
     n = ntime - steps
-    pi = np.repeat(np.arange(npoint), n)
-    ti = np.tile(np.arange(n), npoint)
-    if max_samples and pi.size > max_samples:
-        # Even stride keeps full coverage of both space and season, unlike a
-        # random draw which at this ratio leaves seasonal gaps.
-        keep = np.linspace(0, pi.size - 1, max_samples).astype(np.int64)
-        pi, ti = pi[keep], ti[keep]
-        print(f"  {max_samples:,} of {npoint * n:,} rollout windows")
+    total = npoint * n
+    if max_samples is None or max_samples >= total:
+        per_point = n
+    else:
+        per_point = max(1, int(round(max_samples / npoint)))
+    if not quiet:
+        print(f"  {per_point * npoint:,} of {total:,} rollout windows "
+              f"({per_point} per point x {npoint} points)")
 
     off = np.arange(steps)
-    rows = pi[:, None]
-    cols = ti[:, None] + off
-    X = x[rows, cols]
-    Yp = yp[rows, cols + 1]
-    Yd = yd[rows, cols + 1] if yd is not None else None
+    Xs, Yps, Yds = [], [], []
+    for a in range(0, npoint, point_block):
+        b = min(a + point_block, npoint)
+        sub = ds.isel(x=slice(a, b))
+        x = sub[feat].to_array().astype("float32").transpose("x", "time", "variable").values
+        yp = sub[prog].to_array().astype("float32").transpose("x", "time", "variable").values
+        yd = (sub[diag].to_array().astype("float32")
+              .transpose("x", "time", "variable").values if diag else None)
+        # Even stride in time keeps full seasonal coverage for every point.
+        ti = np.linspace(0, n - 1, per_point).astype(np.int64) if per_point < n \
+            else np.arange(n)
+        cols = ti[:, None] + off
+        for pi in range(x.shape[0]):
+            Xs.append(x[pi][cols])
+            Yps.append(yp[pi][cols + 1])
+            if yd is not None:
+                Yds.append(yd[pi][cols + 1])
+        del x, yp, yd
+    X = np.concatenate(Xs); Yp = np.concatenate(Yps)
+    Yd = np.concatenate(Yds) if Yds else None
     return X, Yp, Yd
 
 
@@ -67,16 +78,21 @@ def cosine_lr(step, total, peak, floor, warmup):
 
 
 def run_phase(model, norm, meta, ds, steps, epochs, peak_lr, batch_size, device,
-              seed, clip=5.0, floor_lr=3e-7, warmup=100, log_every=10,
-              max_samples=None, diag_weight=1.0, var_weights=None):
+              seed, clip=5.0, floor_lr=3e-7, warmup=1000, log_every=10,
+              max_samples=None, diag_weight=1.0, var_weights=None,
+              point_block=250, val_ds=None, val_max=200000):
     feat, prog, diag = meta["features"], meta["prognostic"], meta["diagnostic"]
     prog_idx = meta["prog_idx"]
     lo, hi = mlp.bounds_tensors(prog, meta.get("profile", "mock"))
 
-    X, Yp, Yd = build_windows(ds, feat, prog, diag, steps, max_samples=max_samples)
-    X = torch.as_tensor(X, device=device)
-    Yp = torch.as_tensor(Yp, device=device)
-    Yd = torch.as_tensor(Yd, device=device) if Yd is not None else None
+    X, Yp, Yd = build_windows(ds, feat, prog, diag, steps, max_samples=max_samples,
+                              point_block=point_block, seed=seed)
+    # Keep the window set in host memory and move only the batch. Putting all of
+    # it on the device caps the usable dataset at GPU memory (40 GB on an A100),
+    # which is far below what a faithful reproduction needs.
+    X = torch.as_tensor(X)
+    Yp = torch.as_tensor(Yp)
+    Yd = torch.as_tensor(Yd) if Yd is not None else None
 
     tend = torch.as_tensor(norm.tend, device=device)
     d_mean = torch.as_tensor(norm.d_mean, device=device) if norm.d_mean is not None else None
@@ -88,17 +104,60 @@ def run_phase(model, norm, meta, ds, steps, epochs, peak_lr, batch_size, device,
     lossfn = nn.SmoothL1Loss(beta=1.0, reduction="mean")
     g = torch.Generator(device="cpu").manual_seed(seed)
 
+    # v1 reserves 2022 for validation and selects the best checkpoint on
+    # validation loss. Taking the final weights instead is a real omission:
+    # nothing detects a phase that overfits or diverges late.
+    VX = VYp = VYd = None
+    if val_ds is not None:
+        VX, VYp, VYd = build_windows(val_ds, feat, prog, diag, steps,
+                                     max_samples=val_max, point_block=point_block,
+                                     quiet=True)
+        VX = torch.as_tensor(VX)
+        VYp = torch.as_tensor(VYp)
+        VYd = torch.as_tensor(VYd) if VYd is not None else None
+        print(f"  validation: {len(VX):,} windows")
+
+    def loss_on(xb, ypb, ydb):
+        states, diags = mlp.rollout_batch(model, norm, xb[:, 0], xb, prog_idx,
+                                          lo, hi, steps)
+        res = (states - ypb) / tend
+        m = torch.isfinite(res)
+        L = lossfn(torch.where(m, res, torch.zeros_like(res)), torch.zeros_like(res))
+        if ydb is not None:
+            dres = diags - (ydb - d_mean) / d_std
+            if vw_t is not None:
+                dres = dres * vw_t
+            dm = torch.isfinite(dres)
+            L = L + diag_weight * lossfn(
+                torch.where(dm, dres, torch.zeros_like(dres)), torch.zeros_like(dres))
+        return L
+
+    @torch.no_grad()
+    def validate():
+        model.eval()
+        tot = k = 0.0
+        for b in range(0, len(VX), batch_size):
+            sl = slice(b, b + batch_size)
+            tot += float(loss_on(
+                VX[sl].to(device), VYp[sl].to(device),
+                VYd[sl].to(device) if VYd is not None else None))
+            k += 1
+        model.train()
+        return tot / max(k, 1)
+
+    best = (float("inf"), None)
     nsample = len(X)
     nbatch = max(1, nsample // batch_size)
     total = epochs * nbatch
     step = 0
     for epoch in range(epochs):
-        perm = torch.randperm(nsample, generator=g).to(device)
+        perm = torch.randperm(nsample, generator=g)
         running = 0.0
         for b in range(nbatch):
             sel = perm[b * batch_size:(b + 1) * batch_size]
-            xb, ypb = X[sel], Yp[sel]
-            ydb = Yd[sel] if Yd is not None else None
+            xb = X[sel].to(device, non_blocking=True)
+            ypb = Yp[sel].to(device, non_blocking=True)
+            ydb = Yd[sel].to(device, non_blocking=True) if Yd is not None else None
 
             for grp in opt.param_groups:
                 grp["lr"] = cosine_lr(step, total, peak_lr, floor_lr, warmup)
@@ -129,9 +188,21 @@ def run_phase(model, norm, meta, ds, steps, epochs, peak_lr, batch_size, device,
             opt.step()
             running += loss.item()
             step += 1
+        vmsg = ""
+        if VX is not None:
+            vl = validate()
+            if vl < best[0]:
+                best = (vl, {k: v.detach().cpu().clone()
+                             for k, v in model.state_dict().items()})
+                vmsg = f"  val {vl:.5f} *"
+            else:
+                vmsg = f"  val {vl:.5f}"
         if epoch % log_every == 0 or epoch == epochs - 1:
             print(f"  R={steps} epoch {epoch:3d}/{epochs}  loss {running / nbatch:.5f}"
-                  f"  lr {opt.param_groups[0]['lr']:.2e}")
+                  f"  lr {opt.param_groups[0]['lr']:.2e}{vmsg}", flush=True)
+    if best[1] is not None:
+        print(f"  restoring best checkpoint (val {best[0]:.5f})")
+        model.load_state_dict(best[1])
     return model
 
 
@@ -158,9 +229,19 @@ def main(argv=None):
                    help="rollout length per phase (v1: 4 then 8)")
     p.add_argument("--epochs", type=int, nargs="+", default=[60, 10])
     p.add_argument("--lr", type=float, nargs="+", default=[5e-4, 3e-5])
-    p.add_argument("--batch-size", type=int, default=512)
+    p.add_argument("--batch-size", type=int, default=512,
+                   help="rollout windows per gradient update. v1's effective batch "
+                        "is 4 windows each spanning ALL land points, i.e. 4 x 11,538 "
+                        "= 46,152 point-windows at O96")
+    p.add_argument("--warmup", type=int, default=1000, help="v1 uses 1000 steps")
     p.add_argument("--seed", type=int, default=config.SEED)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument("--val-years", nargs=2, default=("2022", "2022"),
+                   help="years held out for validation and best-checkpoint selection "
+                        "(v1 reserves 2022)")
+    p.add_argument("--no-validation", action="store_true")
+    p.add_argument("--point-block", type=int, default=250,
+                   help="grid points loaded at once when building windows")
     p.add_argument("--max-samples", type=int, default=None,
                    help="cap the number of rollout windows per phase")
     p.add_argument("--outdir", default=None)
@@ -172,6 +253,9 @@ def main(argv=None):
     prog, diag, feat = config.resolve(args.preset, temporal=args.temporal, geo=args.geo, prof=args.profile)
     ds = data.open_store(args.data, tuple(args.train_years),
                          temporal=args.temporal or args.geo, prof=args.profile)
+    val_ds = None if args.no_validation else data.open_store(
+        args.data, tuple(args.val_years),
+        temporal=args.temporal or args.geo, prof=args.profile)
     vw = np.ones(len(diag), dtype="float32")
     if args.var_weights:
         for item in args.var_weights.split(","):
@@ -215,7 +299,8 @@ def main(argv=None):
         print(f"\nPhase {i}: rollout R={steps} ({steps * 6} h), {ep} epochs, peak lr {lr:g}")
         run_phase(model, norm, meta, ds, steps, ep, lr, args.batch_size,
                   args.device, args.seed + i, max_samples=args.max_samples,
-                  diag_weight=args.diag_weight, var_weights=vw)
+                  diag_weight=args.diag_weight, var_weights=vw,
+                  point_block=args.point_block, val_ds=val_ds, warmup=args.warmup)
 
     tag = args.outdir or f"mlp_{args.preset.replace('+', '_')}" + ("_temporal" if args.temporal else "")
     outdir = config.MODELS / tag

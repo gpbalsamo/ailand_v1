@@ -126,6 +126,11 @@ def main(argv=None):
                    help="score over this many grid points (evenly strided) and pool "
                         "the errors; single-point scores are misleading at global scale")
     p.add_argument("--split", default="2022-01-01")
+    p.add_argument("--mask-glacier-coastal", action="store_true",
+                   help="exclude glacier and coastal points, as v1 does throughout")
+    p.add_argument("--single-step", action="store_true",
+                   help="teacher-forced single-timestep scoring (the protocol of "
+                        "the paper's Table B1) instead of a free rollout")
     p.add_argument("--no-plot", action="store_true")
     p.add_argument("--quiet", action="store_true")
     args = p.parse_args(argv)
@@ -133,9 +138,16 @@ def main(argv=None):
     modeldir = args.modeldir or args.preset.replace("+", "_")
     model, model_diag, mmeta = infer.load(modeldir)
 
+    store = data.open_store(args.data, prof=args.profile)
+    if args.mask_glacier_coastal:
+        pool = data.land_mask(store)
+        print(f"excluding glacier and coastal points as v1 does: "
+              f"{store.sizes['x'] - len(pool)} of {store.sizes['x']} dropped")
+    else:
+        pool = np.arange(store.sizes["x"])
     if args.npoints > 1:
-        npt = data.open_store(args.data, prof=args.profile).sizes["x"]
-        points = list(range(0, npt, max(1, npt // args.npoints)))[:args.npoints]
+        points = pool[np.linspace(0, len(pool) - 1, args.npoints).astype(int)].tolist()
+        points = sorted(set(points))
     else:
         points = [args.point]
 
@@ -146,9 +158,12 @@ def main(argv=None):
         temporal=args.temporal, geo=args.geo, prof=args.profile,
     )
     meta = {**mmeta, **rmeta}
-    feats, diag_arr = infer.rollout_points(
-        model, model_diag, meta, feats, verbose=not args.quiet
-    )
+    if args.single_step:
+        feats, diag_arr = infer.single_step(model, model_diag, meta, feats)
+    else:
+        feats, diag_arr = infer.rollout_points(
+            model, model_diag, meta, feats, verbose=not args.quiet
+        )
     preds, truths = [], []
     for i in range(feats.shape[0]):
         preds.append(infer.to_dataset(feats[i], diag_arr[i], times, meta))
