@@ -1,0 +1,28 @@
+# aiLand v0 (XGBoost prototype) — environment actually capable of running the notebook.
+#
+# Pinned from /usr/local/apps/python3/3.12.9-01/bin/python3.12, which is the
+# interpreter behind the `ec_land_db` Jupyter kernel and therefore the one that
+# produced the outputs stored in train_ai_land_example.ipynb.
+#
+# This deliberately replaces ec-land-db/environment.yml (python 3.8.16, numpy
+# 1.24.2, xarray 2023.1.0, zarr 2.13.6, py-xgboost 1.7.6, scikit-learn 1.3.2):
+# that file is a stale conda export from an environment that no longer exists
+# here, pulls from internal ECMWF nexus channels, and does not correspond to
+# anything the notebook has ever run on.
+
+
+numpy==2.1.3
+scipy==1.15.2
+pandas==2.2.3
+xarray==2025.3.1
+zarr==2.18.7
+numcodecs==0.15.1
+dask==2025.3.0
+xgboost==3.0.0
+scikit-learn==1.6.1
+matplotlib==3.10.1
+
+# Present in the kernel env; unused by v0, needed for any v1-style MLP work.
+torch==2.6.0+cu124
+
+ipykernel

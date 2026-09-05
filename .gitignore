@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+*.egg-info/
+
+# Trained models and generated figures are reproducible outputs
+models/*
+!models/.gitkeep
+figures/*
+!figures/.gitkeep
+
+# Large data: the 1 MB mock store IS tracked (see README); real stores are not
+data/*.zarr/
+!data/ecland_cy49r2_2020_2022.zarr/
+*.grib
+*.nc
+*.pdf
+.nbrun.log
