@@ -26,47 +26,69 @@ import torch.nn as nn
 from . import config, data, mlp
 
 
-def build_windows(ds, feat, prog, diag, steps, max_samples=None, point_block=250,
-                  seed=0, quiet=False):
-    """Build ``(sample, step, feature)`` rollout windows, a block of points at a time.
+def build_windows(ds, feat, prog, diag, steps, max_samples=None, time_block=100,
+                  seed=0, quiet=False, **_):
+    """Build ``(sample, step, feature)`` rollout windows, blocked along TIME.
 
-    Materialising every point for every time is not possible at the scale the
-    paper trains on: 11,538 points x 36,525 timesteps x 44 features is 74 GB for
-    the inputs alone. Instead each block of points is loaded, its quota of
-    windows is drawn, and the block is released.
+    The store is chunked ``(100, all points)``, so selecting a subset of points
+    still reads every point in each chunk -- blocking along the point axis reads
+    the whole dataset once per block. Blocking along time instead is
+    chunk-aligned: each block reads exactly the chunks it needs, once.
+
+    The output is preallocated rather than concatenated, so peak memory is the
+    result itself and one block, not twice the result.
     """
     npoint, ntime = ds.sizes["x"], ds.sizes["time"]
     n = ntime - steps
     total = npoint * n
     if max_samples is None or max_samples >= total:
-        per_point = n
+        starts = np.arange(n)
     else:
-        per_point = max(1, int(round(max_samples / npoint)))
+        starts = np.unique(np.linspace(0, n - 1, max(1, max_samples // npoint))
+                           .astype(np.int64))
+    nsample = len(starts) * npoint
     if not quiet:
-        print(f"  {per_point * npoint:,} of {total:,} rollout windows "
-              f"({per_point} per point x {npoint} points)")
+        print(f"  {nsample:,} of {total:,} rollout windows "
+              f"({len(starts)} start times x {npoint} points)", flush=True)
+
+    X = np.empty((nsample, steps, len(feat)), dtype="float32")
+    Yp = np.empty((nsample, steps, len(prog)), dtype="float32")
+    Yd = np.empty((nsample, steps, len(diag)), dtype="float32") if diag else None
 
     off = np.arange(steps)
-    Xs, Yps, Yds = [], [], []
-    for a in range(0, npoint, point_block):
-        b = min(a + point_block, npoint)
-        sub = ds.isel(x=slice(a, b))
-        x = sub[feat].to_array().astype("float32").transpose("x", "time", "variable").values
-        yp = sub[prog].to_array().astype("float32").transpose("x", "time", "variable").values
-        yd = (sub[diag].to_array().astype("float32")
-              .transpose("x", "time", "variable").values if diag else None)
-        # Even stride in time keeps full seasonal coverage for every point.
-        ti = np.linspace(0, n - 1, per_point).astype(np.int64) if per_point < n \
-            else np.arange(n)
-        cols = ti[:, None] + off
-        for pi in range(x.shape[0]):
-            Xs.append(x[pi][cols])
-            Yps.append(yp[pi][cols + 1])
+    w = 0
+    for a in range(0, n, time_block):
+        b = min(a + time_block, n)
+        sel = starts[(starts >= a) & (starts < b)]
+        if not len(sel):
+            continue
+        lo, hi = int(sel.min()), int(sel.max()) + steps + 1
+        sub = ds.isel(time=slice(lo, hi))
+
+        def stack(names):
+            # One variable at a time. to_array() over ~40 variables builds a
+            # single dask graph and materialises a concatenated intermediate,
+            # which is what makes the peak several times the result.
+            out = np.empty((hi - lo, ds.sizes["x"], len(names)), dtype="float32")
+            for j, v in enumerate(names):
+                out[:, :, j] = np.asarray(sub[v].values, dtype="float32")
+            return out
+
+        x = stack(feat)
+        yp = stack(prog)
+        yd = stack(diag) if diag else None
+        for t in sel:
+            r = int(t) - lo
+            X[w:w + npoint] = x[r:r + steps].transpose(1, 0, 2)
+            Yp[w:w + npoint] = yp[r + 1:r + 1 + steps].transpose(1, 0, 2)
             if yd is not None:
-                Yds.append(yd[pi][cols + 1])
+                Yd[w:w + npoint] = yd[r + 1:r + 1 + steps].transpose(1, 0, 2)
+            w += npoint
         del x, yp, yd
-    X = np.concatenate(Xs); Yp = np.concatenate(Yps)
-    Yd = np.concatenate(Yds) if Yds else None
+        if not quiet:
+            print(f"    windows {w:,}/{nsample:,}", end="\r", flush=True)
+    if not quiet:
+        print(" " * 40, end="\r")
     return X, Yp, Yd
 
 
@@ -86,7 +108,7 @@ def run_phase(model, norm, meta, ds, steps, epochs, peak_lr, batch_size, device,
     lo, hi = mlp.bounds_tensors(prog, meta.get("profile", "mock"))
 
     X, Yp, Yd = build_windows(ds, feat, prog, diag, steps, max_samples=max_samples,
-                              point_block=point_block, seed=seed)
+                              time_block=point_block, seed=seed)
     # Keep the window set in host memory and move only the batch. Putting all of
     # it on the device caps the usable dataset at GPU memory (40 GB on an A100),
     # which is far below what a faithful reproduction needs.
@@ -110,7 +132,7 @@ def run_phase(model, norm, meta, ds, steps, epochs, peak_lr, batch_size, device,
     VX = VYp = VYd = None
     if val_ds is not None:
         VX, VYp, VYd = build_windows(val_ds, feat, prog, diag, steps,
-                                     max_samples=val_max, point_block=point_block,
+                                     max_samples=val_max, time_block=point_block,
                                      quiet=True)
         VX = torch.as_tensor(VX)
         VYp = torch.as_tensor(VYp)
@@ -240,8 +262,15 @@ def main(argv=None):
                    help="years held out for validation and best-checkpoint selection "
                         "(v1 reserves 2022)")
     p.add_argument("--no-validation", action="store_true")
-    p.add_argument("--point-block", type=int, default=250,
-                   help="grid points loaded at once when building windows")
+    p.add_argument("--point-block", type=int, default=100,
+                   help="timesteps loaded at once when building windows. The store "
+                        "is chunked (100, all points), so blocking on time is "
+                        "chunk-aligned; blocking on points would read every point "
+                        "in every chunk regardless.")
+    p.add_argument("--stat-samples", type=int, default=2000000,
+                   help="samples used to estimate normalisation statistics")
+    p.add_argument("--val-max", type=int, default=200000,
+                   help="validation windows used for checkpoint selection")
     p.add_argument("--max-samples", type=int, default=None,
                    help="cap the number of rollout windows per phase")
     p.add_argument("--outdir", default=None)
@@ -277,12 +306,18 @@ def main(argv=None):
         "rollout": args.rollout, "epochs": args.epochs, "seed": args.seed,
     }
 
-    # Statistics come from the single-step arrays, matching the XGBoost path.
-    X1, yp1, yd1, _ = data.training_arrays(
-        preset=args.preset, years=tuple(args.train_years), path=args.data,
-        temporal=args.temporal, geo=args.geo, prof=args.profile,
-    )
-    norm = mlp.Normaliser(X1, yp1, yd1)
+    # Statistics from a subsample of single-step windows. Materialising the whole
+    # training set to compute a mean and a standard deviation is what was
+    # exhausting memory: 2,920 steps x 11,538 points through xarray's stack() is
+    # several GB before any training starts, and at 22 years it is far worse.
+    # A few million samples estimate these statistics perfectly well.
+    Xs, Yps, Yds = build_windows(ds, feat, prog, diag, 1,
+                                 max_samples=args.stat_samples,
+                                 time_block=args.point_block, quiet=True)
+    pidx = meta["prog_idx"]
+    norm = mlp.Normaliser(Xs[:, 0], Yps[:, 0] - Xs[:, 0][:, pidx],
+                          Yds[:, 0] if Yds is not None else None)
+    del Xs, Yps, Yds
     print(f"preset {args.preset}: {len(feat)} features, {len(prog)} prognostic + "
           f"{len(diag)} diagnostic, device {args.device}")
     print("tendency scalers: " +
@@ -300,7 +335,8 @@ def main(argv=None):
         run_phase(model, norm, meta, ds, steps, ep, lr, args.batch_size,
                   args.device, args.seed + i, max_samples=args.max_samples,
                   diag_weight=args.diag_weight, var_weights=vw,
-                  point_block=args.point_block, val_ds=val_ds, warmup=args.warmup)
+                  point_block=args.point_block, val_ds=val_ds, warmup=args.warmup,
+                  val_max=args.val_max)
 
     tag = args.outdir or f"mlp_{args.preset.replace('+', '_')}" + ("_temporal" if args.temporal else "")
     outdir = config.MODELS / tag

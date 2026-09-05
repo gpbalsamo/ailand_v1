@@ -36,6 +36,8 @@ DATA="${DATA:-data/o96_1998_2022.zarr}"
 PRESET="${PRESET:-v1}"
 OUT="${OUT:-repro_${PRESET//+/_}}"
 MAXSAMP="${MAXSAMP:-12000000}"
+STATSAMP="${STATSAMP:-2000000}"
+VALMAX="${VALMAX:-400000}"
 BATCH="${BATCH:-46152}"
 EPOCHS1="${EPOCHS1:-80}"
 EPOCHS2="${EPOCHS2:-8}"
@@ -49,7 +51,8 @@ $PY -u -m ailand.train_mlp \
     --rollout 4 8 --epochs "$EPOCHS1" "$EPOCHS2" --lr 5e-4 3e-5 \
     --warmup 1000 --batch-size "$BATCH" --max-samples "$MAXSAMP" \
     --train-years 1998 2019 --val-years 2022 2022 \
-    --point-block 200 --device cuda --outdir "$OUT"
+    --stat-samples "$STATSAMP" --val-max "$VALMAX" \
+    --point-block 100 --device cuda --outdir "$OUT"
 
 echo "=== Table B1 protocol: single-timestep, glacier+coastal excluded ==="
 $PY -u -m ailand.evaluate \
