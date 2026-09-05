@@ -20,7 +20,8 @@ Two things sit side by side here:
   with Observational Fine-Tuning*, EGUsphere preprint
   [egusphere-2026-3620](https://doi.org/10.5194/egusphere-2026-3620). Reimplemented
   here as `ailand.mlp` / `ailand.train_mlp` and being reproduced against the paper's
-  own Table B1 numbers.
+  own Table B1 numbers. v1 builds on **Wesselkamp et al. (2025)**, the LSTM/XGBoost/MLP
+  comparison that selected the architecture — see [Lineage](#lineage).
 
 The goal in order: reproduce v1 to exclude bugs and misrepresentation, then extend it —
 with runoff and evaporation as outputs, and with soil moisture and soil temperature
@@ -30,6 +31,52 @@ observations from the 775-site FLUXNET Shuttle pool.
 ML term in ecLand language, and attributes each recipe to the v1 paper, the wider
 literature, or a choice made here. [`docs/STRATEGY.md`](docs/STRATEGY.md) is the plan
 for going beyond v1 using observations.
+
+---
+
+## Lineage
+
+Three generations of the same idea, and this repo works across all of them:
+
+| | What | Where |
+|---|---|---|
+| **v0** | XGBoost on a 10-point mock dataset. The example notebook that started this. | [`pinnstorm/ec-land-db`](https://github.com/pinnstorm/ec-land-db) |
+| **Wesselkamp et al. (2025)** | The systematic comparison: LSTM vs gradient boosting vs feed-forward networks as prognostic state emulators of ecLand. Found the LSTM best for long-range soil temperature and snow, XGBoost robust for soil moisture, and the MLP the best accuracy/efficiency trade-off — which is why v1 is an MLP. | GMD **18**, 921–937 |
+| **v1** | The published emulator: MLP with a diagnostic branch, global N320 pretraining, then observational fine-tuning on FLUXNET. | EGUsphere preprint |
+
+v1 describes itself as "building substantially on the prototype introduced in
+Wesselkamp et al. (2025)" — wider and deeper, with longer rollouts, an extended input
+space (the temporal and astronomical forcings) and a set of diagnostic outputs. So the
+progression is: *does ML work at all* (v0) → *which architecture* (Wesselkamp 2025) →
+*make it global, stable and observation-corrected* (v1).
+
+### References
+
+- Raoult, N., Pinnington, E., Santa Cruz, M., Pinault, F., Raoult, B., Zelenka, N.,
+  Arduini, G., Balsamo, G., Boussetta, S., Chantry, M., de Rosnay, P., Dueben, P., and
+  Rüdiger, C. (2026). *aiLand v1: Physics-Based Land Surface Emulator with Observational
+  Fine-Tuning.* EGUsphere preprint.
+  [doi:10.5194/egusphere-2026-3620](https://doi.org/10.5194/egusphere-2026-3620)
+  — code and the `aiLand-base` checkpoint at
+  [doi:10.5281/zenodo.20764680](https://doi.org/10.5281/zenodo.20764680); training data at
+  [doi:10.21957/0f6t-7f73](https://doi.org/10.21957/0f6t-7f73) (N320) and
+  [doi:10.21957/fs25-c406](https://doi.org/10.21957/fs25-c406) (O96).
+
+- Wesselkamp, M., Chantry, M., Pinnington, E., Choulga, M., Boussetta, S., Kalweit, M.,
+  Bödecker, J., Dormann, C. F., Pappenberger, F., and Balsamo, G. (2025). *Advances in
+  land surface forecasting: a comparison of LSTM, gradient boosting, and feed-forward
+  neural networks as prognostic state emulators in a case study with ecLand.*
+  Geoscientific Model Development **18**, 921–937.
+  [doi:10.5194/gmd-18-921-2025](https://doi.org/10.5194/gmd-18-921-2025)
+
+- Boussetta, S., Balsamo, G., et al. (2021). *ECLand: The ECMWF land surface modelling
+  system.* Atmosphere **12**, 723. — the physical model being emulated;
+  source at [`ecmwf-ifs/ecland`](https://github.com/ecmwf-ifs/ecland).
+
+Related repos in this line of work: [`fluxnet-shuttle-ecland`](https://github.com/gpbalsamo/fluxnet-shuttle-ecland)
+(775 flux-tower sites run through ecLand — the observational resource behind
+[`docs/STRATEGY.md`](docs/STRATEGY.md)), [`plumber2-ecland`](https://github.com/gpbalsamo/plumber2-ecland),
+and [`ecland-portal`](https://github.com/gpbalsamo/ecland-portal).
 
 ---
 
