@@ -236,6 +236,53 @@ gradient-based parameter estimation and data assimilation), and `mlp.rollout_bat
 backpropagates through the autoregressive update, which is what makes the multi-step
 loss possible in the first place.
 
+## Results on the real O96 data (GPU)
+
+Full O96 land set — **11,538 land points**, 2020–2021 training, held-out 2022, scored
+as a continuous autoregressive rollout pooled over 500 points. aiLand v1 network size
+(6 × 512, 1.64M params), one NVIDIA A100, **26 minutes** end to end
+(`slurm/train_gpu.sh`, job 33311304).
+
+| | RMSE | R² | v1 (paper) |
+|---|---|---|---|
+| `stl1` | 2.93 K | **0.980** | 1.47 K (1-yr, N320) |
+| `stl2` | 2.20 K | **0.988** | — |
+| `stl3` | 1.78 K | **0.992** | — |
+| `swvl1` | 0.025 m³ m⁻³ | **0.973** | 0.014 (90-day) |
+| `swvl2` | 0.018 m³ m⁻³ | **0.983** | — |
+| `swvl3` | 0.020 m³ m⁻³ | **0.977** | — |
+| `snowc` | 0.073 | **0.969** | — |
+| `2t` | 4.91 K | 0.945 | **0.61–0.69 K** |
+| `2d` | 1.92 K | 0.990 | — |
+| `skt` | 9.39 K | 0.834 | **1.06 K** |
+| `slhf` (LE) | — | **−0.337** | 10.1–11.1 W m⁻² |
+| `sshf` (H) | — | **−0.670** | 11.7–12.5 W m⁻² |
+| `e` (evaporation) | — | **−0.335** | — (v1 outputs LE, not E) |
+| `sro` / `ssro` | — | 0.388 / 0.384 | not output by v1 |
+| `aco2gpp` | — | −0.131 | not output by v1 |
+
+**The prognostic state is close to v1.** Soil temperature and moisture and snow cover
+all sit at R² 0.97–0.99, with `stl1` RMSE within a factor of two of v1's — reasonable
+given O96 (~125 km) against v1's N320 (~31 km), 68 epochs against 88, and 3M of the
+33.7M available rollout windows.
+
+**The diagnostic branch is not.** `2t` at 4.91 K against v1's 0.61–0.69 K, `skt` at
+9.39 K against 1.06 K, and the turbulent fluxes at negative R² — worse than predicting
+their own climatology. This is a real gap, not a scaling artefact, and it is the most
+useful thing this run tells us. Likely causes, in order of suspicion: a single-block
+diagnostic head with no per-variable loss weighting, so 9 diagnostics of very different
+difficulty share one undifferentiated term; global rather than per-point standardisation
+of highly spatially variable fluxes; and simply far less training than v1.
+
+Two internal consistency checks that did pass: `corr(slhf, e) = 0.9992` — the same
+quantity in energy and water units, as it must be — and `e` and `slhf` scoring within
+0.002 of each other in R².
+
+It is worth noting that LE and H are exactly the two variables aiLand v1 fine-tunes on
+FLUXNET, and the ones its abstract reports improving by 30% and 20%. Our being weakest
+precisely there is consistent with them being the hard part, and is the direct argument
+for `docs/STRATEGY.md`.
+
 ## aiLand v0 vs aiLand v1
 
 | | v0 (this notebook) | v1 (Raoult et al., 2026) |
