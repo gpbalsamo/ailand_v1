@@ -21,7 +21,7 @@ def r2_score_multi(y_pred, y_true):
     return r2_score(y_pred.flatten(), y_true.flatten())
 
 
-def build_model(n_estimators, subsample, learning_rate, seed):
+def build_model(n_estimators, subsample, learning_rate, seed, multi_strategy=None):
     # The v0 notebook passed `objevtive=mean_absolute_error` -- a typo that
     # XGBoost silently accepts as an unused kwarg, so the objective stayed
     # reg:squarederror and the intended MAE was never applied. Set it explicitly.
@@ -33,6 +33,12 @@ def build_model(n_estimators, subsample, learning_rate, seed):
         subsample=subsample,
         random_state=seed,
     )
+    if multi_strategy:
+        # With the default "one_output_per_tree" each target is fitted by its own
+        # trees, so per-target scaling is close to a no-op. "multi_output_tree"
+        # shares one tree structure across all targets, which is where the loss
+        # really is dominated by the largest-magnitude target and where scaling bites.
+        kwargs["multi_strategy"] = multi_strategy
     if learning_rate is not None:
         kwargs["learning_rate"] = learning_rate
     return xgb.XGBRegressor(**kwargs)
@@ -54,12 +60,21 @@ def main(argv=None):
              "fitting (aiLand v1's 'tendency scaler'), so variables with small "
              "increments are not swamped by soil temperature and snow",
     )
+    p.add_argument("--temporal", action="store_true",
+                   help="add time of day, day of year and TOA insolation to the inputs")
+    p.add_argument("--geo", action="store_true",
+                   help="add cos/sin latitude and longitude (point identifiers here)")
+    p.add_argument("--multi-strategy", default=None,
+                   choices=["one_output_per_tree", "multi_output_tree"],
+                   help="XGBoost multi-output strategy; scaling only matters for "
+                        "multi_output_tree, where all targets share a tree structure")
     p.add_argument("--outdir", default=None)
     p.add_argument("--quiet", action="store_true")
     args = p.parse_args(argv)
 
     X, y_prog, y_diag, meta = data.training_arrays(
-        preset=args.preset, years=tuple(args.train_years), path=args.data
+        preset=args.preset, years=tuple(args.train_years), path=args.data,
+        temporal=args.temporal, geo=args.geo,
     )
     print(f"preset {args.preset}: {X.shape[0]} samples, {X.shape[1]} features, "
           f"{len(meta['prognostic'])} prognostic + {len(meta['diagnostic'])} diagnostic targets")
@@ -72,18 +87,29 @@ def main(argv=None):
     else:
         y_fit = y_prog
 
-    outdir = config.MODELS / (args.outdir or args.preset.replace("+", "_"))
+    tag = args.preset.replace("+", "_")
+    if args.temporal:
+        tag += "_temporal"
+    if args.geo:
+        tag += "_geo"
+    if args.scale_targets:
+        tag += "_scaled"
+    if args.multi_strategy == "multi_output_tree":
+        tag += "_mot"
+    outdir = config.MODELS / (args.outdir or tag)
     outdir.mkdir(parents=True, exist_ok=True)
 
     verbose = False if args.quiet else 100
     print("Fitting XGB model for prognostic increments...")
-    model = build_model(args.n_estimators, args.subsample, args.learning_rate, args.seed)
+    model = build_model(args.n_estimators, args.subsample, args.learning_rate,
+                        args.seed, args.multi_strategy)
     model.fit(X, y_fit, eval_set=[(X, y_fit)], verbose=verbose)
     model.save_model(outdir / "prognostic.json")
 
     if meta["diagnostic"]:
         print("Fitting XGB model for diagnostic variables...")
-        model_diag = build_model(args.n_estimators, args.subsample, args.learning_rate, args.seed)
+        model_diag = build_model(args.n_estimators, args.subsample, args.learning_rate,
+                                 args.seed, args.multi_strategy)
         model_diag.fit(X, y_diag, eval_set=[(X, y_diag)], verbose=verbose)
         model_diag.save_model(outdir / "diagnostic.json")
 
@@ -95,6 +121,7 @@ def main(argv=None):
         subsample=args.subsample,
         learning_rate=args.learning_rate,
         seed=args.seed,
+        multi_strategy=args.multi_strategy,
         n_samples=int(X.shape[0]),
     )
     (outdir / "meta.json").write_text(json.dumps(meta, indent=2))

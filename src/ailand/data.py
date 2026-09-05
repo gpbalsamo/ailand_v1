@@ -5,16 +5,98 @@ import xarray as xr
 
 from . import config
 
+SOLAR_CONSTANT = 1361.0  # W m-2
 
-def open_store(path=None, years=None):
+
+def _solar_terms(doy):
+    """Spencer (1971) Fourier fits for solar declination and the equation of time.
+
+    :param doy: day of year as a float (1-based, including the fraction of day)
+    :returns: ``(declination_rad, eqtime_minutes, earth_sun_factor)``
+    """
+    gamma = 2.0 * np.pi * (doy - 1.0) / 365.0
+    decl = (
+        0.006918
+        - 0.399912 * np.cos(gamma)
+        + 0.070257 * np.sin(gamma)
+        - 0.006758 * np.cos(2 * gamma)
+        + 0.000907 * np.sin(2 * gamma)
+        - 0.002697 * np.cos(3 * gamma)
+        + 0.001480 * np.sin(3 * gamma)
+    )
+    eqtime = 229.18 * (
+        0.000075
+        + 0.001868 * np.cos(gamma)
+        - 0.032077 * np.sin(gamma)
+        - 0.014615 * np.cos(2 * gamma)
+        - 0.040849 * np.sin(2 * gamma)
+    )
+    # Earth-Sun distance correction.
+    e0 = 1.000110 + 0.034221 * np.cos(gamma) + 0.001280 * np.sin(gamma)
+    return decl, eqtime, e0
+
+
+def add_temporal(ds):
+    """Attach the temporal/astronomical forcing fields to a store.
+
+    Adds :data:`config.TEMPORAL` and :data:`config.GEO` as ``(time, x)`` variables,
+    derived from the time coordinate and each point's latitude/longitude. The v0
+    notebook had no notion of time of day or season at all: seasonality entered
+    only indirectly through the meteorological forcing.
+    """
+    time = ds["time"]
+    lat = ds["lat"].astype("float64")
+    lon = ds["lon"].astype("float64")
+
+    doy = time.dt.dayofyear.astype("float64")
+    hour = time.dt.hour.astype("float64") + time.dt.minute.astype("float64") / 60.0
+    doy_frac = doy + hour / 24.0
+
+    # Season: annual cycle, continuous across the year boundary.
+    ang = 2.0 * np.pi * (doy_frac - 1.0) / 365.25
+    ds = ds.assign(cos_julian_day=np.cos(ang), sin_julian_day=np.sin(ang))
+
+    # Time of day, in *local* solar time, so the diurnal cycle is in phase
+    # regardless of longitude.
+    local_hour = (hour + lon / 15.0) % 24.0
+    ang_day = 2.0 * np.pi * local_hour / 24.0
+    ds = ds.assign(cos_local_time=np.cos(ang_day), sin_local_time=np.sin(ang_day))
+
+    # Top-of-atmosphere insolation from the solar zenith angle.
+    decl, eqtime, e0 = _solar_terms(doy_frac)
+    tst = hour * 60.0 + eqtime + 4.0 * lon           # true solar time, minutes
+    ha = np.deg2rad(tst / 4.0 - 180.0)               # hour angle
+    latr = np.deg2rad(lat)
+    cos_sza = np.sin(latr) * np.sin(decl) + np.cos(latr) * np.cos(decl) * np.cos(ha)
+    ds = ds.assign(insolation=(SOLAR_CONSTANT * e0 * cos_sza).clip(min=0.0))
+
+    # Static geographic encodings.
+    ds = ds.assign(
+        cos_latitude=np.cos(latr),
+        sin_latitude=np.sin(latr),
+        cos_longitude=np.cos(np.deg2rad(lon)),
+        sin_longitude=np.sin(np.deg2rad(lon)),
+    )
+
+    # Broadcast anything that came out 1-D onto the full (time, x) grid.
+    template = ds[config.STATIC[0]]
+    for name in config.TEMPORAL + config.GEO:
+        ds[name] = ds[name].broadcast_like(template).transpose(*template.dims)
+    return ds
+
+
+def open_store(path=None, years=None, temporal=False):
     """Open the ecLand Zarr store, optionally restricted to a slice of years."""
     ds = xr.open_zarr(path or config.DATA)
+    if temporal:
+        ds = add_temporal(ds)
     if years is not None:
         ds = ds.sel(time=slice(*years))
     return ds
 
 
-def training_arrays(preset=config.DEFAULT_PRESET, years=("2020", "2021"), path=None):
+def training_arrays(preset=config.DEFAULT_PRESET, years=("2020", "2021"), path=None,
+                    temporal=False, geo=False):
     """Build the stacked (sample, feature) training arrays.
 
     Features are taken at time ``t`` and targets at ``t+1``. Prognostic targets
@@ -23,8 +105,8 @@ def training_arrays(preset=config.DEFAULT_PRESET, years=("2020", "2021"), path=N
 
     :returns: ``(X, y_prog, y_diag, meta)``
     """
-    prog, diag, feat = config.resolve(preset)
-    ds = open_store(path, years)
+    prog, diag, feat = config.resolve(preset, temporal=temporal, geo=geo)
+    ds = open_store(path, years, temporal=temporal or geo)
 
     missing = [v for v in feat + diag if v not in ds]
     if missing:
@@ -57,6 +139,8 @@ def training_arrays(preset=config.DEFAULT_PRESET, years=("2020", "2021"), path=N
         "diagnostic": diag,
         "prog_idx": prog_idx,
         "years": list(years) if years else None,
+        "temporal": bool(temporal),
+        "geo": bool(geo),
     }
     return (
         X.values,
@@ -79,15 +163,16 @@ def tendency_scalers(y_prog):
     return scale.astype("float32")
 
 
-def rollout_inputs(preset=config.DEFAULT_PRESET, point=5, years=None, path=None):
+def rollout_inputs(preset=config.DEFAULT_PRESET, point=5, years=None, path=None,
+                   temporal=False, geo=False):
     """Feature matrix and truth for a single grid point, for autoregressive rollout.
 
     :returns: ``(feats_arr, times, truth, meta)`` where ``feats_arr`` is a
         writable ``(time, feature)`` array whose prognostic columns will be
         overwritten step by step.
     """
-    prog, diag, feat = config.resolve(preset)
-    ds = open_store(path, years)
+    prog, diag, feat = config.resolve(preset, temporal=temporal, geo=geo)
+    ds = open_store(path, years, temporal=temporal or geo)
     sel = ds.isel(x=point, time=slice(0, -1))
     feats_arr = sel[feat].to_array().values.T.astype("float32").copy()
     truth = sel[prog + diag]
@@ -98,22 +183,24 @@ def rollout_inputs(preset=config.DEFAULT_PRESET, point=5, years=None, path=None)
         "diagnostic": diag,
         "prog_idx": [feat.index(v) for v in prog],
         "point": point,
+        "temporal": bool(temporal),
+        "geo": bool(geo),
         "lat": float(sel.lat.values),
         "lon": float(sel.lon.values),
     }
     return feats_arr, sel.time.values, truth, meta
 
 
-def bounds_arrays(prognostic):
-    """Lower/upper bound vectors aligned with ``prognostic``."""
-    lo = np.array(
-        [config.BOUNDS[v][0] if config.BOUNDS[v][0] is not None else -np.inf
-         for v in prognostic],
-        dtype="float32",
-    )
-    hi = np.array(
-        [config.BOUNDS[v][1] if config.BOUNDS[v][1] is not None else np.inf
-         for v in prognostic],
-        dtype="float32",
-    )
-    return lo, hi
+def bounds_arrays(names, table=None):
+    """Lower/upper bound vectors aligned with ``names``.
+
+    Unlisted variables are unbounded, so this works for both the prognostic state
+    (:data:`config.BOUNDS`) and the diagnostic outputs (:data:`config.DIAG_BOUNDS`).
+    """
+    table = config.BOUNDS if table is None else table
+    lo, hi = [], []
+    for v in names:
+        a, b = table.get(v, (None, None))
+        lo.append(-np.inf if a is None else a)
+        hi.append(np.inf if b is None else b)
+    return np.array(lo, dtype="float32"), np.array(hi, dtype="float32")

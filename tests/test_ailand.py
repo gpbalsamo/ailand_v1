@@ -93,3 +93,50 @@ def test_tendency_scalers_span_orders_of_magnitude():
     # This spread is the reason an unscaled summed-squared-error loss is
     # dominated by soil temperature and snow.
     assert s.max() / s.min() > 1e3
+
+
+def test_temporal_forcings_are_physical():
+    ds = data.open_store(temporal=True, years=("2020", "2020"))
+    for name in config.TEMPORAL:
+        assert ds[name].dims == ds["stl1"].dims, f"{name} must be a (time, x) field"
+    ins = ds["insolation"].values
+    assert ins.min() == 0.0, "insolation must be zero at night"
+    # Peak TOA insolation at ~51.6 N is well under the solar constant.
+    assert 900 < ins.max() < 1361
+    for trig in ("cos_julian_day", "sin_julian_day", "cos_local_time", "sin_local_time"):
+        v = ds[trig].values
+        assert -1.0001 <= v.min() and v.max() <= 1.0001
+
+
+def test_runoff_is_diagnostic_not_prognostic():
+    prog, diag, feat = config.resolve("v1+runoff")
+    assert "sro" in diag and "ssro" in diag
+    assert "sro" not in prog and "sro" not in feat, (
+        "runoff is a flux, not a state: carrying it in the input vector propagates "
+        "its noise into the soil column"
+    )
+    lo, hi = data.bounds_arrays(diag, config.DIAG_BOUNDS)
+    assert lo[diag.index("sro")] == 0.0
+
+
+def test_mlp_rollout_is_differentiable():
+    import torch
+    from ailand import mlp
+
+    prog, diag, feat = config.resolve("v1", temporal=True)
+    model = mlp.AiLandMLP(len(feat), len(prog), len(diag), width=32, depth=2)
+    X, y_prog, y_diag, meta = data.training_arrays(
+        preset="v1", years=("2020", "2020"), temporal=True
+    )
+    norm = mlp.Normaliser(X, y_prog, y_diag)
+    lo, hi = mlp.bounds_tensors(prog)
+
+    x = torch.as_tensor(X[:4], dtype=torch.float32)
+    forcing = x.unsqueeze(1).repeat(1, 3, 1)
+    states, diags = mlp.rollout_batch(model, norm, x, forcing, meta["prog_idx"],
+                                      lo, hi, steps=3)
+    assert states.shape == (4, 3, len(prog))
+    # The whole point of the MLP: gradients flow back through every rollout step.
+    states.sum().backward()
+    grads = [p.grad for p in model.backbone.parameters() if p.grad is not None]
+    assert grads and any(g.abs().sum() > 0 for g in grads)

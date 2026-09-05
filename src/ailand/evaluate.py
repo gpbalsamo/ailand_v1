@@ -91,6 +91,8 @@ def main(argv=None):
     p.add_argument("--preset", default=config.DEFAULT_PRESET, choices=sorted(config.PRESETS))
     p.add_argument("--modeldir", default=None)
     p.add_argument("--data", default=None)
+    p.add_argument("--temporal", action="store_true")
+    p.add_argument("--geo", action="store_true")
     p.add_argument("--point", type=int, default=5)
     p.add_argument("--split", default="2022-01-01")
     p.add_argument("--no-plot", action="store_true")
@@ -100,7 +102,8 @@ def main(argv=None):
     modeldir = args.modeldir or args.preset.replace("+", "_")
     model, model_diag, mmeta = infer.load(modeldir)
     feats_arr, times, truth, rmeta = data.rollout_inputs(
-        preset=args.preset, point=args.point, path=args.data
+        preset=args.preset, point=args.point, path=args.data,
+        temporal=args.temporal, geo=args.geo,
     )
     meta = {**mmeta, **rmeta}
     feats_arr, diag_arr = infer.rollout(

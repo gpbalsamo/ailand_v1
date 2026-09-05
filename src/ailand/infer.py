@@ -20,9 +20,13 @@ import xgboost as xgb
 from . import config, data
 
 
-def load(modeldir):
+def load(modeldir, device="cpu"):
+    """Load a trained model directory, dispatching on the model type in meta.json."""
     modeldir = config.MODELS / modeldir if not str(modeldir).startswith("/") else modeldir
     meta = json.loads((modeldir / "meta.json").read_text())
+    if meta.get("model") == "mlp":
+        from . import mlp
+        return mlp.load_trained(modeldir, device=device)
     model = xgb.XGBRegressor()
     model.load_model(modeldir / "prognostic.json")
     model_diag = None
@@ -39,6 +43,7 @@ def rollout(model, model_diag, meta, feats_arr, batch=None, verbose=True):
     """
     prog_idx = meta["prog_idx"]
     lo, hi = data.bounds_arrays(meta["prognostic"])
+    dlo, dhi = data.bounds_arrays(meta["diagnostic"], config.DIAG_BOUNDS)
     scalers = np.asarray(meta.get("tendency_scalers"), dtype="float32")
     rescale = scalers if meta.get("scale_targets") else None
 
@@ -56,10 +61,10 @@ def rollout(model, model_diag, meta, feats_arr, batch=None, verbose=True):
         if rescale is not None:
             pred = pred * rescale
         if model_diag is not None:
-            diag_arr[t] = model_diag.predict(feats_arr[[t]])[0]
+            diag_arr[t] = np.clip(model_diag.predict(feats_arr[[t]])[0], dlo, dhi)
         feats_arr[t + 1, prog_idx] = np.clip(feats_arr[t, prog_idx] + pred, lo, hi)
     if model_diag is not None:
-        diag_arr[-1] = model_diag.predict(feats_arr[[-1]])[0]
+        diag_arr[-1] = np.clip(model_diag.predict(feats_arr[[-1]])[0], dlo, dhi)
     return feats_arr, diag_arr
 
 
@@ -84,6 +89,8 @@ def main(argv=None):
     p.add_argument("--preset", default=config.DEFAULT_PRESET, choices=sorted(config.PRESETS))
     p.add_argument("--modeldir", default=None, help="defaults to models/<preset>")
     p.add_argument("--data", default=None)
+    p.add_argument("--temporal", action="store_true")
+    p.add_argument("--geo", action="store_true")
     p.add_argument("--point", type=int, default=5, help="grid point index to run at")
     p.add_argument("--out", default=None, help="netCDF path for the rollout")
     p.add_argument("--quiet", action="store_true")
@@ -93,7 +100,8 @@ def main(argv=None):
     model, model_diag, mmeta = load(modeldir)
 
     feats_arr, times, _truth, rmeta = data.rollout_inputs(
-        preset=args.preset, point=args.point, path=args.data
+        preset=args.preset, point=args.point, path=args.data,
+        temporal=args.temporal, geo=args.geo,
     )
     meta = {**mmeta, **rmeta}
     if mmeta["features"] != rmeta["features"]:

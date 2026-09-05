@@ -19,3 +19,6 @@ data/*.zarr/
 *.pdf
 .nbrun.log
 .pytest_cache/
+.mlp.log
+.ablate.log
+.runoff.log
