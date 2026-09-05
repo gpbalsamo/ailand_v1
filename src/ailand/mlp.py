@@ -216,6 +216,7 @@ def load_trained(modeldir, device="cpu"):
     model = AiLandMLP(
         len(meta["features"]), len(meta["prognostic"]), len(meta["diagnostic"]),
         width=meta["width"], depth=meta["depth"],
+        diag_blocks=meta.get("diag_blocks", 1),
     )
     model.load_state_dict(torch.load(modeldir / "model.pt", map_location=device))
     model.to(device)

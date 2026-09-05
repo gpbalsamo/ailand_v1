@@ -68,7 +68,7 @@ def cosine_lr(step, total, peak, floor, warmup):
 
 def run_phase(model, norm, meta, ds, steps, epochs, peak_lr, batch_size, device,
               seed, clip=5.0, floor_lr=3e-7, warmup=100, log_every=10,
-              max_samples=None):
+              max_samples=None, diag_weight=1.0, var_weights=None):
     feat, prog, diag = meta["features"], meta["prognostic"], meta["diagnostic"]
     prog_idx = meta["prog_idx"]
     lo, hi = mlp.bounds_tensors(prog, meta.get("profile", "mock"))
@@ -82,6 +82,8 @@ def run_phase(model, norm, meta, ds, steps, epochs, peak_lr, batch_size, device,
     d_mean = torch.as_tensor(norm.d_mean, device=device) if norm.d_mean is not None else None
     d_std = torch.as_tensor(norm.d_std, device=device) if norm.d_std is not None else None
 
+    vw_t = (torch.as_tensor(var_weights, device=device)
+            if var_weights is not None and not np.allclose(var_weights, 1.0) else None)
     opt = torch.optim.Adam(model.parameters(), lr=peak_lr)
     lossfn = nn.SmoothL1Loss(beta=1.0, reduction="mean")
     g = torch.Generator(device="cpu").manual_seed(seed)
@@ -114,9 +116,12 @@ def run_phase(model, norm, meta, ds, steps, epochs, peak_lr, batch_size, device,
                           torch.zeros_like(res))
             if ydb is not None:
                 dres = diags - (ydb - d_mean) / d_std
+                if vw_t is not None:
+                    dres = dres * vw_t
                 dm = torch.isfinite(dres)
-                loss = loss + lossfn(torch.where(dm, dres, torch.zeros_like(dres)),
-                                     torch.zeros_like(dres))
+                loss = loss + diag_weight * lossfn(
+                    torch.where(dm, dres, torch.zeros_like(dres)),
+                    torch.zeros_like(dres))
 
             opt.zero_grad(set_to_none=True)
             loss.backward()
@@ -141,6 +146,14 @@ def main(argv=None):
     p.add_argument("--geo", action="store_true")
     p.add_argument("--width", type=int, default=256, help="v1 uses 512")
     p.add_argument("--depth", type=int, default=4, help="v1 uses 6")
+    p.add_argument("--diag-blocks", type=int, default=1,
+                   help="blocks in the diagnostic head (v1's base uses 1; its S2 "
+                        "fine-tuning strategy extends it to 3)")
+    p.add_argument("--diag-weight", type=float, default=1.0,
+                   help="global weight on the diagnostic loss term")
+    p.add_argument("--var-weights", default=None,
+                   help="per-diagnostic weights, e.g. 'slhf=3,sshf=3,e=3'. v1 allows "
+                        "per-variable weighting but sets them all to 1.")
     p.add_argument("--rollout", type=int, nargs="+", default=[4, 8],
                    help="rollout length per phase (v1: 4 then 8)")
     p.add_argument("--epochs", type=int, nargs="+", default=[60, 10])
@@ -159,12 +172,24 @@ def main(argv=None):
     prog, diag, feat = config.resolve(args.preset, temporal=args.temporal, geo=args.geo, prof=args.profile)
     ds = data.open_store(args.data, tuple(args.train_years),
                          temporal=args.temporal or args.geo, prof=args.profile)
+    vw = np.ones(len(diag), dtype="float32")
+    if args.var_weights:
+        for item in args.var_weights.split(","):
+            k, v = item.split("=")
+            if k.strip() not in diag:
+                raise KeyError(f"{k.strip()!r} is not a diagnostic of this preset")
+            vw[diag.index(k.strip())] = float(v)
+        print("diagnostic weights:",
+              ", ".join(f"{v}={w:g}" for v, w in zip(diag, vw)))
+
     meta = {
         "preset": args.preset, "features": feat, "prognostic": prog,
         "diagnostic": diag, "prog_idx": [feat.index(v) for v in prog],
         "temporal": args.temporal, "geo": args.geo, "model": "mlp",
         "profile": args.profile,
         "width": args.width, "depth": args.depth,
+        "diag_blocks": args.diag_blocks, "diag_weight": args.diag_weight,
+        "var_weights": vw.tolist(),
         "rollout": args.rollout, "epochs": args.epochs, "seed": args.seed,
     }
 
@@ -179,8 +204,8 @@ def main(argv=None):
     print("tendency scalers: " +
           ", ".join(f"{v}={s:.4g}" for v, s in zip(prog, norm.tend)))
 
-    model = mlp.AiLandMLP(len(feat), len(prog), len(diag),
-                          width=args.width, depth=args.depth).to(args.device)
+    model = mlp.AiLandMLP(len(feat), len(prog), len(diag), width=args.width,
+                          depth=args.depth, diag_blocks=args.diag_blocks).to(args.device)
     print(f"parameters: {sum(x.numel() for x in model.parameters()):,}")
 
     nphase = len(args.rollout)
@@ -189,7 +214,8 @@ def main(argv=None):
     for i, (steps, ep, lr) in enumerate(zip(args.rollout, epochs, lrs), 1):
         print(f"\nPhase {i}: rollout R={steps} ({steps * 6} h), {ep} epochs, peak lr {lr:g}")
         run_phase(model, norm, meta, ds, steps, ep, lr, args.batch_size,
-                  args.device, args.seed + i, max_samples=args.max_samples)
+                  args.device, args.seed + i, max_samples=args.max_samples,
+                  diag_weight=args.diag_weight, var_weights=vw)
 
     tag = args.outdir or f"mlp_{args.preset.replace('+', '_')}" + ("_temporal" if args.temporal else "")
     outdir = config.MODELS / tag

@@ -36,6 +36,8 @@ EPOCHS2="${EPOCHS2:-8}"
 BATCH="${BATCH:-8192}"
 MAXSAMP="${MAXSAMP:-2000000}"
 NPOINTS_EVAL="${NPOINTS_EVAL:-200}"
+DIAGBLOCKS="${DIAGBLOCKS:-1}"
+VARW="${VARW:-}"
 
 echo "=== node $(hostname) ==="
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
@@ -48,6 +50,7 @@ $PY -u -m ailand.train_mlp \
     --width "$WIDTH" --depth "$DEPTH" \
     --rollout 4 8 --epochs "$EPOCHS1" "$EPOCHS2" \
     --batch-size "$BATCH" --max-samples "$MAXSAMP" \
+    --diag-blocks "$DIAGBLOCKS" ${VARW:+--var-weights "$VARW"} \
     --train-years 2020 2021 \
     --device cuda --outdir "$OUT"
 

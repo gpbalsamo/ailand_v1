@@ -195,3 +195,42 @@ def test_batched_rollout_matches_single_point():
         single, _ = infer.rollout(Toy(), None, dict(meta_base), feats[i].copy(),
                                   verbose=False)
         np.testing.assert_allclose(batched[i], single, rtol=1e-6)
+
+
+def test_diagnostics_are_written_one_step_ahead():
+    """A diagnostic predicted from the input at t is the value at t+1.
+
+    Writing it at t instead is a six-hour phase error. Harmless for slowly
+    varying fields (2t loses ~2% of R2 to a 6h shift) but fatal for the
+    turbulent fluxes, whose diurnal cycle it shifts by a quarter period --
+    slhf drops to R2 0.35 from a pure shift alone.
+    """
+    import numpy as np
+    from ailand import infer
+
+    prog, diag, feat = config.resolve("v1+runoff")
+    meta = dict(prognostic=prog, diagnostic=diag, profile="mock",
+                prog_idx=[feat.index(v) for v in prog],
+                scale_targets=False, tendency_scalers=None)
+
+    class Zero:
+        def predict(self, x):
+            return np.zeros((len(x), len(prog)), dtype="float32")
+
+    class Counter:
+        """Returns the step number, so the output index is unambiguous."""
+        def __init__(self): self.i = 0
+        def predict(self, x):
+            self.i += 1
+            return np.full((len(x), len(diag)), float(self.i), dtype="float32")
+
+    feats = np.zeros((6, len(feat)), dtype="float32")
+    _, d = infer.rollout(Zero(), Counter(), dict(meta), feats.copy(), verbose=False)
+    assert np.isnan(d[0]).all(), "index 0 has no predictor and must stay NaN"
+    # First call (value 1) belongs at index 1, not 0.
+    assert d[1, 0] == 1.0 and d[2, 0] == 2.0
+
+    featsb = np.zeros((3, 6, len(feat)), dtype="float32")
+    _, db = infer.rollout_points(Zero(), Counter(), dict(meta), featsb, verbose=False)
+    assert np.isnan(db[:, 0]).all()
+    assert db[0, 1, 0] == 1.0 and db[0, 2, 0] == 2.0

@@ -69,13 +69,13 @@ def rollout(model, model_diag, meta, feats_arr, batch=None, verbose=True):
             dv = model_diag.predict(feats_arr[[t]])[0]
             if d_mean is not None:
                 dv = dv * d_std + d_mean
-            diag_arr[t] = np.clip(dv, dlo, dhi)
+            # Diagnostics are trained on the target at t+1 from the input at t,
+            # so the prediction belongs at t+1. Writing it at t is a six-hour
+            # phase error: harmless for slowly-varying fields like 2t, but it
+            # destroys the turbulent fluxes, whose diurnal cycle it shifts by a
+            # quarter period. Index 0 has no predictor and stays NaN.
+            diag_arr[t + 1] = np.clip(dv, dlo, dhi)
         feats_arr[t + 1, prog_idx] = np.clip(feats_arr[t, prog_idx] + pred, lo, hi)
-    if model_diag is not None:
-        dv = model_diag.predict(feats_arr[[-1]])[0]
-        if d_mean is not None:
-            dv = dv * d_std + d_mean
-        diag_arr[-1] = np.clip(dv, dlo, dhi)
     return feats_arr, diag_arr
 
 
@@ -102,18 +102,19 @@ def rollout_points(model, model_diag, meta, feats, batch=None, verbose=True):
     diag_arr = (np.full((npoint, n, len(meta["diagnostic"])), np.nan, dtype="float32")
                 if meta["diagnostic"] else np.empty((npoint, n, 0), dtype="float32"))
 
-    for t in range(n):
+    for t in range(n - 1):
         x = feats[:, t]
         if model_diag is not None:
             dv = model_diag.predict(x)
             if d_mean is not None:
                 dv = dv * d_std + d_mean
-            diag_arr[:, t] = np.clip(dv, dlo, dhi)
-        if t + 1 < n:
-            pred = model.predict(x)
-            if rescale is not None:
-                pred = pred * rescale
-            feats[:, t + 1, prog_idx] = np.clip(x[:, prog_idx] + pred, lo, hi)
+            # See the note in rollout(): the diagnostic predicted from the input
+            # at t is the value at t+1.
+            diag_arr[:, t + 1] = np.clip(dv, dlo, dhi)
+        pred = model.predict(x)
+        if rescale is not None:
+            pred = pred * rescale
+        feats[:, t + 1, prog_idx] = np.clip(x[:, prog_idx] + pred, lo, hi)
         if verbose and t % 500 == 0:
             print(f"  step {t}/{n}", end="\r", flush=True)
     if verbose:
