@@ -85,10 +85,11 @@ def add_temporal(ds):
     return ds
 
 
-def open_store(path=None, years=None, temporal=False):
+def open_store(path=None, years=None, temporal=False, prof="mock"):
     """Open the ecLand Zarr store, optionally restricted to a slice of years."""
     ds = xr.open_zarr(path or config.DATA)
-    if temporal:
+    # The O96 store already carries the temporal forcings, precomputed.
+    if temporal and config.profile(prof)["derive_temporal"]:
         ds = add_temporal(ds)
     if years is not None:
         ds = ds.sel(time=slice(*years))
@@ -96,7 +97,7 @@ def open_store(path=None, years=None, temporal=False):
 
 
 def training_arrays(preset=config.DEFAULT_PRESET, years=("2020", "2021"), path=None,
-                    temporal=False, geo=False):
+                    temporal=False, geo=False, prof="mock"):
     """Build the stacked (sample, feature) training arrays.
 
     Features are taken at time ``t`` and targets at ``t+1``. Prognostic targets
@@ -105,8 +106,8 @@ def training_arrays(preset=config.DEFAULT_PRESET, years=("2020", "2021"), path=N
 
     :returns: ``(X, y_prog, y_diag, meta)``
     """
-    prog, diag, feat = config.resolve(preset, temporal=temporal, geo=geo)
-    ds = open_store(path, years, temporal=temporal or geo)
+    prog, diag, feat = config.resolve(preset, temporal=temporal, geo=geo, prof=prof)
+    ds = open_store(path, years, temporal=temporal or geo, prof=prof)
 
     missing = [v for v in feat + diag if v not in ds]
     if missing:
@@ -141,6 +142,7 @@ def training_arrays(preset=config.DEFAULT_PRESET, years=("2020", "2021"), path=N
         "years": list(years) if years else None,
         "temporal": bool(temporal),
         "geo": bool(geo),
+        "profile": prof,
     }
     return (
         X.values,
@@ -164,15 +166,15 @@ def tendency_scalers(y_prog):
 
 
 def rollout_inputs(preset=config.DEFAULT_PRESET, point=5, years=None, path=None,
-                   temporal=False, geo=False):
+                   temporal=False, geo=False, prof="mock"):
     """Feature matrix and truth for a single grid point, for autoregressive rollout.
 
     :returns: ``(feats_arr, times, truth, meta)`` where ``feats_arr`` is a
         writable ``(time, feature)`` array whose prognostic columns will be
         overwritten step by step.
     """
-    prog, diag, feat = config.resolve(preset, temporal=temporal, geo=geo)
-    ds = open_store(path, years, temporal=temporal or geo)
+    prog, diag, feat = config.resolve(preset, temporal=temporal, geo=geo, prof=prof)
+    ds = open_store(path, years, temporal=temporal or geo, prof=prof)
     sel = ds.isel(x=point, time=slice(0, -1))
     feats_arr = sel[feat].to_array().values.T.astype("float32").copy()
     truth = sel[prog + diag]
@@ -185,19 +187,21 @@ def rollout_inputs(preset=config.DEFAULT_PRESET, point=5, years=None, path=None,
         "point": point,
         "temporal": bool(temporal),
         "geo": bool(geo),
+        "profile": prof,
         "lat": float(sel.lat.values),
         "lon": float(sel.lon.values),
     }
     return feats_arr, sel.time.values, truth, meta
 
 
-def bounds_arrays(names, table=None):
+def bounds_arrays(names, table=None, prof=None):
     """Lower/upper bound vectors aligned with ``names``.
 
     Unlisted variables are unbounded, so this works for both the prognostic state
     (:data:`config.BOUNDS`) and the diagnostic outputs (:data:`config.DIAG_BOUNDS`).
     """
-    table = config.BOUNDS if table is None else table
+    if table is None:
+        table = config.profile(prof)["bounds"] if prof else config.BOUNDS
     lo, hi = [], []
     for v in names:
         a, b = table.get(v, (None, None))

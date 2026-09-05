@@ -151,12 +151,14 @@ def rollout_batch(model, norm, x0, forcing, prog_idx, lo, hi, steps):
     return torch.stack(states, 1), out_diag
 
 
-def bounds_tensors(prognostic):
-    lo = np.array([config.BOUNDS[v][0] if config.BOUNDS[v][0] is not None else -np.inf
-                   for v in prognostic], dtype="float32")
-    hi = np.array([config.BOUNDS[v][1] if config.BOUNDS[v][1] is not None else np.inf
-                   for v in prognostic], dtype="float32")
-    return lo, hi
+def bounds_tensors(prognostic, prof="mock"):
+    table = config.profile(prof)["bounds"]
+    lo, hi = [], []
+    for v in prognostic:
+        a, b = table.get(v, (None, None))
+        lo.append(-np.inf if a is None else a)
+        hi.append(np.inf if b is None else b)
+    return np.array(lo, dtype="float32"), np.array(hi, dtype="float32")
 
 
 class TorchPredictor:

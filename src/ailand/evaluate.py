@@ -43,6 +43,32 @@ def score(pred_ds, truth, split="2022-01-01"):
     return rows
 
 
+def score_pooled(preds, truths, split="2022-01-01"):
+    """Pool errors across grid points before scoring.
+
+    A single point tells you almost nothing about a globally trained emulator;
+    these scores are computed over the concatenated points.
+    """
+    if len(preds) == 1:
+        return score(preds[0], truths[0], split)
+    is_test = preds[0].time.values >= np.datetime64(split)
+    rows = []
+    for name in preds[0].data_vars:
+        a = np.concatenate([p[name].values for p in preds])
+        r = np.concatenate([t[name].values for t in truths])
+        m = np.concatenate([is_test] * len(preds))
+        ok = np.isfinite(a) & np.isfinite(r)
+        for label, mask in (("train", ~m & ok), ("test", m & ok)):
+            if mask.sum() == 0:
+                continue
+            e = a[mask] - r[mask]
+            rows.append(dict(variable=name, period=label,
+                             rmse=float(np.sqrt(np.mean(e**2))),
+                             bias=float(np.mean(e)),
+                             r2=float(r2_score(r[mask], a[mask]))))
+    return rows
+
+
 def print_table(rows, split):
     print(f"\n{'variable':10s} {'period':7s} {'RMSE':>12s} {'bias':>12s} {'R2':>9s}")
     print("-" * 54)
@@ -88,12 +114,17 @@ def plot(pred_ds, truth, meta, split="2022-01-01", path=None):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--preset", default=config.DEFAULT_PRESET, choices=sorted(config.PRESETS))
+    p.add_argument("--preset", default=config.DEFAULT_PRESET, )
     p.add_argument("--modeldir", default=None)
     p.add_argument("--data", default=None)
+    p.add_argument("--profile", default="mock", choices=sorted(config.PROFILES),
+                   help="dataset profile: 'mock' or 'o96'")
     p.add_argument("--temporal", action="store_true")
     p.add_argument("--geo", action="store_true")
     p.add_argument("--point", type=int, default=5)
+    p.add_argument("--npoints", type=int, default=1,
+                   help="score over this many grid points (evenly strided) and pool "
+                        "the errors; single-point scores are misleading at global scale")
     p.add_argument("--split", default="2022-01-01")
     p.add_argument("--no-plot", action="store_true")
     p.add_argument("--quiet", action="store_true")
@@ -101,17 +132,33 @@ def main(argv=None):
 
     modeldir = args.modeldir or args.preset.replace("+", "_")
     model, model_diag, mmeta = infer.load(modeldir)
-    feats_arr, times, truth, rmeta = data.rollout_inputs(
-        preset=args.preset, point=args.point, path=args.data,
-        temporal=args.temporal, geo=args.geo,
-    )
-    meta = {**mmeta, **rmeta}
-    feats_arr, diag_arr = infer.rollout(
-        model, model_diag, meta, feats_arr, verbose=not args.quiet
-    )
-    pred = infer.to_dataset(feats_arr, diag_arr, times, meta)
 
-    rows = score(pred, truth, args.split)
+    if args.npoints > 1:
+        npt = data.open_store(args.data, prof=args.profile).sizes["x"]
+        points = list(range(0, npt, max(1, npt // args.npoints)))[:args.npoints]
+    else:
+        points = [args.point]
+
+    preds, truths = [], []
+    for i, pt in enumerate(points):
+        feats_arr, times, truth, rmeta = data.rollout_inputs(
+            preset=args.preset, point=pt, path=args.data,
+            temporal=args.temporal, geo=args.geo, prof=args.profile,
+        )
+        meta = {**mmeta, **rmeta}
+        feats_arr, diag_arr = infer.rollout(
+            model, model_diag, meta, feats_arr,
+            verbose=(not args.quiet) and len(points) == 1,
+        )
+        preds.append(infer.to_dataset(feats_arr, diag_arr, times, meta))
+        truths.append(truth)
+        if len(points) > 1 and (i + 1) % 10 == 0:
+            print(f"  rolled out {i + 1}/{len(points)} points", end="\r", flush=True)
+    if len(points) > 1:
+        print(f"pooled over {len(points)} grid points" + " " * 20)
+
+    rows = score_pooled(preds, truths, args.split)
+    pred = preds[0]
     print_table(rows, args.split)
     if not args.no_plot:
         plot(pred, truth, meta, args.split)

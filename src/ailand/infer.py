@@ -42,10 +42,15 @@ def rollout(model, model_diag, meta, feats_arr, batch=None, verbose=True):
     :returns: ``(feats_arr, diag_arr)``
     """
     prog_idx = meta["prog_idx"]
-    lo, hi = data.bounds_arrays(meta["prognostic"])
-    dlo, dhi = data.bounds_arrays(meta["diagnostic"], config.DIAG_BOUNDS)
+    prof = config.profile(meta.get("profile", "mock"))
+    lo, hi = data.bounds_arrays(meta["prognostic"], prof["bounds"])
+    dlo, dhi = data.bounds_arrays(meta["diagnostic"], prof["diag_bounds"])
     scalers = np.asarray(meta.get("tendency_scalers"), dtype="float32")
     rescale = scalers if meta.get("scale_targets") else None
+    d_mean = meta.get("diag_mean")
+    d_std = meta.get("diag_std")
+    d_mean = np.asarray(d_mean, dtype="float32") if d_mean else None
+    d_std = np.asarray(d_std, dtype="float32") if d_std else None
 
     n = len(feats_arr)
     diag_arr = (
@@ -61,10 +66,16 @@ def rollout(model, model_diag, meta, feats_arr, batch=None, verbose=True):
         if rescale is not None:
             pred = pred * rescale
         if model_diag is not None:
-            diag_arr[t] = np.clip(model_diag.predict(feats_arr[[t]])[0], dlo, dhi)
+            dv = model_diag.predict(feats_arr[[t]])[0]
+            if d_mean is not None:
+                dv = dv * d_std + d_mean
+            diag_arr[t] = np.clip(dv, dlo, dhi)
         feats_arr[t + 1, prog_idx] = np.clip(feats_arr[t, prog_idx] + pred, lo, hi)
     if model_diag is not None:
-        diag_arr[-1] = np.clip(model_diag.predict(feats_arr[[-1]])[0], dlo, dhi)
+        dv = model_diag.predict(feats_arr[[-1]])[0]
+        if d_mean is not None:
+            dv = dv * d_std + d_mean
+        diag_arr[-1] = np.clip(dv, dlo, dhi)
     return feats_arr, diag_arr
 
 
@@ -86,9 +97,11 @@ def to_dataset(feats_arr, diag_arr, times, meta):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--preset", default=config.DEFAULT_PRESET, choices=sorted(config.PRESETS))
+    p.add_argument("--preset", default=config.DEFAULT_PRESET, )
     p.add_argument("--modeldir", default=None, help="defaults to models/<preset>")
     p.add_argument("--data", default=None)
+    p.add_argument("--profile", default="mock", choices=sorted(config.PROFILES),
+                   help="dataset profile: 'mock' or 'o96'")
     p.add_argument("--temporal", action="store_true")
     p.add_argument("--geo", action="store_true")
     p.add_argument("--point", type=int, default=5, help="grid point index to run at")
@@ -101,7 +114,7 @@ def main(argv=None):
 
     feats_arr, times, _truth, rmeta = data.rollout_inputs(
         preset=args.preset, point=args.point, path=args.data,
-        temporal=args.temporal, geo=args.geo,
+        temporal=args.temporal, geo=args.geo, prof=args.profile,
     )
     meta = {**mmeta, **rmeta}
     if mmeta["features"] != rmeta["features"]:

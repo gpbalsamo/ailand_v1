@@ -22,3 +22,6 @@ data/*.zarr/
 .mlp.log
 .ablate.log
 .runoff.log
+.extract*.log
+.mlp96.log
+slurm/logs/

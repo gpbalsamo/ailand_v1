@@ -26,10 +26,13 @@ import torch.nn as nn
 from . import config, data, mlp
 
 
-def build_windows(ds, feat, prog, diag, steps):
+def build_windows(ds, feat, prog, diag, steps, max_samples=None):
     """Build ``(sample, step, feature)`` rollout windows over all grid points.
 
     Each window is ``steps`` consecutive 6-hourly timesteps at one grid point.
+    Windows are subsampled by index *before* being materialised -- the full set
+    for a global store is far too large to hold (2000 points x 2900 windows x
+    4 steps x 45 features is several GB).
     """
     x = ds[feat].to_array().astype("float32").transpose("x", "time", "variable").values
     yp = ds[prog].to_array().astype("float32").transpose("x", "time", "variable").values
@@ -38,11 +41,21 @@ def build_windows(ds, feat, prog, diag, steps):
 
     npoint, ntime, _ = x.shape
     n = ntime - steps
-    # Window i at point p covers inputs t = i .. i+steps-1 and targets t+1.
-    idx = np.arange(n)[:, None] + np.arange(steps)[None, :]
-    X = x[:, idx].reshape(npoint * n, steps, -1)
-    Yp = yp[:, idx + 1].reshape(npoint * n, steps, -1)
-    Yd = yd[:, idx + 1].reshape(npoint * n, steps, -1) if yd is not None else None
+    pi = np.repeat(np.arange(npoint), n)
+    ti = np.tile(np.arange(n), npoint)
+    if max_samples and pi.size > max_samples:
+        # Even stride keeps full coverage of both space and season, unlike a
+        # random draw which at this ratio leaves seasonal gaps.
+        keep = np.linspace(0, pi.size - 1, max_samples).astype(np.int64)
+        pi, ti = pi[keep], ti[keep]
+        print(f"  {max_samples:,} of {npoint * n:,} rollout windows")
+
+    off = np.arange(steps)
+    rows = pi[:, None]
+    cols = ti[:, None] + off
+    X = x[rows, cols]
+    Yp = yp[rows, cols + 1]
+    Yd = yd[rows, cols + 1] if yd is not None else None
     return X, Yp, Yd
 
 
@@ -54,12 +67,13 @@ def cosine_lr(step, total, peak, floor, warmup):
 
 
 def run_phase(model, norm, meta, ds, steps, epochs, peak_lr, batch_size, device,
-              seed, clip=5.0, floor_lr=3e-7, warmup=100, log_every=10):
+              seed, clip=5.0, floor_lr=3e-7, warmup=100, log_every=10,
+              max_samples=None):
     feat, prog, diag = meta["features"], meta["prognostic"], meta["diagnostic"]
     prog_idx = meta["prog_idx"]
-    lo, hi = mlp.bounds_tensors(prog)
+    lo, hi = mlp.bounds_tensors(prog, meta.get("profile", "mock"))
 
-    X, Yp, Yd = build_windows(ds, feat, prog, diag, steps)
+    X, Yp, Yd = build_windows(ds, feat, prog, diag, steps, max_samples=max_samples)
     X = torch.as_tensor(X, device=device)
     Yp = torch.as_tensor(Yp, device=device)
     Yd = torch.as_tensor(Yd, device=device) if Yd is not None else None
@@ -92,10 +106,17 @@ def run_phase(model, norm, meta, ds, steps, epochs, peak_lr, batch_size, device,
             )
             # Compare in normalised increment space: (predicted - truth) / tendency
             # scaler, so variables with tiny increments are not swamped.
-            loss = lossfn((states - ypb) / tend, torch.zeros_like(states))
+            # v1 computes the loss only over valid (non-NaN) target elements,
+            # which is what lets it train on sparse observational data too.
+            res = (states - ypb) / tend
+            m = torch.isfinite(res)
+            loss = lossfn(torch.where(m, res, torch.zeros_like(res)),
+                          torch.zeros_like(res))
             if ydb is not None:
-                loss = loss + lossfn((diags - (ydb - d_mean) / d_std),
-                                     torch.zeros_like(diags))
+                dres = diags - (ydb - d_mean) / d_std
+                dm = torch.isfinite(dres)
+                loss = loss + lossfn(torch.where(dm, dres, torch.zeros_like(dres)),
+                                     torch.zeros_like(dres))
 
             opt.zero_grad(set_to_none=True)
             loss.backward()
@@ -111,9 +132,11 @@ def run_phase(model, norm, meta, ds, steps, epochs, peak_lr, batch_size, device,
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--preset", default="v1", choices=sorted(config.PRESETS))
+    p.add_argument("--preset", default="v1", )
     p.add_argument("--data", default=None)
     p.add_argument("--train-years", nargs=2, default=("2020", "2021"))
+    p.add_argument("--profile", default="mock", choices=sorted(config.PROFILES),
+                   help="dataset profile: 'mock' or 'o96'")
     p.add_argument("--temporal", action="store_true")
     p.add_argument("--geo", action="store_true")
     p.add_argument("--width", type=int, default=256, help="v1 uses 512")
@@ -125,19 +148,22 @@ def main(argv=None):
     p.add_argument("--batch-size", type=int, default=512)
     p.add_argument("--seed", type=int, default=config.SEED)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument("--max-samples", type=int, default=None,
+                   help="cap the number of rollout windows per phase")
     p.add_argument("--outdir", default=None)
     args = p.parse_args(argv)
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    prog, diag, feat = config.resolve(args.preset, temporal=args.temporal, geo=args.geo)
+    prog, diag, feat = config.resolve(args.preset, temporal=args.temporal, geo=args.geo, prof=args.profile)
     ds = data.open_store(args.data, tuple(args.train_years),
-                         temporal=args.temporal or args.geo)
+                         temporal=args.temporal or args.geo, prof=args.profile)
     meta = {
         "preset": args.preset, "features": feat, "prognostic": prog,
         "diagnostic": diag, "prog_idx": [feat.index(v) for v in prog],
         "temporal": args.temporal, "geo": args.geo, "model": "mlp",
+        "profile": args.profile,
         "width": args.width, "depth": args.depth,
         "rollout": args.rollout, "epochs": args.epochs, "seed": args.seed,
     }
@@ -145,7 +171,7 @@ def main(argv=None):
     # Statistics come from the single-step arrays, matching the XGBoost path.
     X1, yp1, yd1, _ = data.training_arrays(
         preset=args.preset, years=tuple(args.train_years), path=args.data,
-        temporal=args.temporal, geo=args.geo,
+        temporal=args.temporal, geo=args.geo, prof=args.profile,
     )
     norm = mlp.Normaliser(X1, yp1, yd1)
     print(f"preset {args.preset}: {len(feat)} features, {len(prog)} prognostic + "
@@ -163,7 +189,7 @@ def main(argv=None):
     for i, (steps, ep, lr) in enumerate(zip(args.rollout, epochs, lrs), 1):
         print(f"\nPhase {i}: rollout R={steps} ({steps * 6} h), {ep} epochs, peak lr {lr:g}")
         run_phase(model, norm, meta, ds, steps, ep, lr, args.batch_size,
-                  args.device, args.seed + i)
+                  args.device, args.seed + i, max_samples=args.max_samples)
 
     tag = args.outdir or f"mlp_{args.preset.replace('+', '_')}" + ("_temporal" if args.temporal else "")
     outdir = config.MODELS / tag

@@ -46,7 +46,7 @@ def build_model(n_estimators, subsample, learning_rate, seed, multi_strategy=Non
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--preset", default=config.DEFAULT_PRESET, choices=sorted(config.PRESETS))
+    p.add_argument("--preset", default=config.DEFAULT_PRESET, )
     p.add_argument("--data", default=None, help="path to the ecLand Zarr store")
     p.add_argument("--train-years", nargs=2, default=("2020", "2021"), metavar=("START", "END"))
     p.add_argument("--n-estimators", type=int, default=1000)
@@ -60,6 +60,8 @@ def main(argv=None):
              "fitting (aiLand v1's 'tendency scaler'), so variables with small "
              "increments are not swamped by soil temperature and snow",
     )
+    p.add_argument("--profile", default="mock", choices=sorted(config.PROFILES),
+                   help="dataset profile: 'mock' or 'o96'")
     p.add_argument("--temporal", action="store_true",
                    help="add time of day, day of year and TOA insolation to the inputs")
     p.add_argument("--geo", action="store_true",
@@ -74,12 +76,33 @@ def main(argv=None):
 
     X, y_prog, y_diag, meta = data.training_arrays(
         preset=args.preset, years=tuple(args.train_years), path=args.data,
-        temporal=args.temporal, geo=args.geo,
+        temporal=args.temporal, geo=args.geo, prof=args.profile,
     )
     print(f"preset {args.preset}: {X.shape[0]} samples, {X.shape[1]} features, "
           f"{len(meta['prognostic'])} prognostic + {len(meta['diagnostic'])} diagnostic targets")
 
+    # v1 computes the loss only over valid (non-NaN) target elements. XGBoost has
+    # no such masking, so drop the affected rows -- in the O96 extract this is a
+    # handful of slhf values out of ~10^6.
+    bad = np.isnan(y_prog).any(axis=1)
+    if y_diag is not None:
+        bad |= np.isnan(y_diag).any(axis=1)
+    if bad.any():
+        print(f"dropping {bad.sum()} of {len(bad)} samples with NaN targets "
+              f"({bad.mean():.4%})")
+        X, y_prog = X[~bad], y_prog[~bad]
+        y_diag = y_diag[~bad] if y_diag is not None else None
+
     scalers = data.tendency_scalers(y_prog)
+    # Diagnostics need standardising too, and for the same reason: in the O96 set
+    # they span slhf ~1e7 J m-2 down to evaporation ~1e-3 m, so an unstandardised
+    # sum-of-squares is entirely the turbulent fluxes and everything else gets
+    # essentially no gradient.
+    d_mean = d_std = None
+    if y_diag is not None and args.scale_targets:
+        d_mean = y_diag.mean(0).astype("float32")
+        d_std = y_diag.std(0).astype("float32")
+        d_std[d_std == 0] = 1.0
     if args.scale_targets:
         print("tendency scalers:",
               ", ".join(f"{v}={s:.4g}" for v, s in zip(meta["prognostic"], scalers)))
@@ -110,13 +133,16 @@ def main(argv=None):
         print("Fitting XGB model for diagnostic variables...")
         model_diag = build_model(args.n_estimators, args.subsample, args.learning_rate,
                                  args.seed, args.multi_strategy)
-        model_diag.fit(X, y_diag, eval_set=[(X, y_diag)], verbose=verbose)
+        y_diag_fit = (y_diag - d_mean) / d_std if d_mean is not None else y_diag
+        model_diag.fit(X, y_diag_fit, eval_set=[(X, y_diag_fit)], verbose=verbose)
         model_diag.save_model(outdir / "diagnostic.json")
 
     meta = dict(meta)
     meta.update(
         scale_targets=bool(args.scale_targets),
         tendency_scalers=scalers.tolist(),
+        diag_mean=d_mean.tolist() if d_mean is not None else None,
+        diag_std=d_std.tolist() if d_std is not None else None,
         n_estimators=args.n_estimators,
         subsample=args.subsample,
         learning_rate=args.learning_rate,
