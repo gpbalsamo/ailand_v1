@@ -27,7 +27,7 @@ from . import config, data, mlp
 
 
 def build_windows(ds, feat, prog, diag, steps, max_samples=None, time_block=100,
-                  seed=0, quiet=False, **_):
+                  seed=0, quiet=False, n_starts=None, **_):
     """Build ``(sample, step, feature)`` rollout windows, blocked along TIME.
 
     The store is chunked ``(100, all points)``, so selecting a subset of points
@@ -41,19 +41,31 @@ def build_windows(ds, feat, prog, diag, steps, max_samples=None, time_block=100,
     npoint, ntime = ds.sizes["x"], ds.sizes["time"]
     n = ntime - steps
     total = npoint * n
+    rng = np.random.default_rng(seed)
+
+    # Two ways to spend a sample budget: every point at few start times, or a
+    # subset of points at many. The first saturates quickly for prognostic
+    # variables, which are locally determined; the second gives the diagnostic
+    # branch more distinct surface-atmosphere states to learn from.
     if max_samples is None or max_samples >= total:
-        starts = np.arange(n)
+        starts, ppp = np.arange(n), npoint
+    elif n_starts:
+        starts = np.unique(np.linspace(0, n - 1, min(n_starts, n)).astype(np.int64))
+        ppp = max(1, min(npoint, max_samples // len(starts)))
     else:
         starts = np.unique(np.linspace(0, n - 1, max(1, max_samples // npoint))
                            .astype(np.int64))
-    nsample = len(starts) * npoint
+        ppp = npoint
+
+    nsample = len(starts) * ppp
     if not quiet:
         print(f"  {nsample:,} of {total:,} rollout windows "
-              f"({len(starts)} start times x {npoint} points)", flush=True)
+              f"({len(starts):,} start times x {ppp:,} points)", flush=True)
 
     X = np.empty((nsample, steps, len(feat)), dtype="float32")
     Yp = np.empty((nsample, steps, len(prog)), dtype="float32")
     Yd = np.empty((nsample, steps, len(diag)), dtype="float32") if diag else None
+    full = ppp >= npoint
 
     off = np.arange(steps)
     w = 0
@@ -79,11 +91,14 @@ def build_windows(ds, feat, prog, diag, steps, max_samples=None, time_block=100,
         yd = stack(diag) if diag else None
         for t in sel:
             r = int(t) - lo
-            X[w:w + npoint] = x[r:r + steps].transpose(1, 0, 2)
-            Yp[w:w + npoint] = yp[r + 1:r + 1 + steps].transpose(1, 0, 2)
+            # A different random subset per start time, so the union still covers
+            # the whole grid while each sample is a distinct place and time.
+            pi = slice(None) if full else rng.choice(npoint, ppp, replace=False)
+            X[w:w + ppp] = x[r:r + steps][:, pi].transpose(1, 0, 2)
+            Yp[w:w + ppp] = yp[r + 1:r + 1 + steps][:, pi].transpose(1, 0, 2)
             if yd is not None:
-                Yd[w:w + npoint] = yd[r + 1:r + 1 + steps].transpose(1, 0, 2)
-            w += npoint
+                Yd[w:w + ppp] = yd[r + 1:r + 1 + steps][:, pi].transpose(1, 0, 2)
+            w += ppp
         del x, yp, yd
         if not quiet:
             print(f"    windows {w:,}/{nsample:,}", end="\r", flush=True)
@@ -102,13 +117,13 @@ def cosine_lr(step, total, peak, floor, warmup):
 def run_phase(model, norm, meta, ds, steps, epochs, peak_lr, batch_size, device,
               seed, clip=5.0, floor_lr=3e-7, warmup=1000, log_every=10,
               max_samples=None, diag_weight=1.0, var_weights=None,
-              point_block=250, val_ds=None, val_max=200000):
+              point_block=250, val_ds=None, val_max=200000, n_starts=None):
     feat, prog, diag = meta["features"], meta["prognostic"], meta["diagnostic"]
     prog_idx = meta["prog_idx"]
     lo, hi = mlp.bounds_tensors(prog, meta.get("profile", "mock"))
 
     X, Yp, Yd = build_windows(ds, feat, prog, diag, steps, max_samples=max_samples,
-                              time_block=point_block, seed=seed)
+                              time_block=point_block, seed=seed, n_starts=n_starts)
     # Keep the window set in host memory and move only the batch. Putting all of
     # it on the device caps the usable dataset at GPU memory (40 GB on an A100),
     # which is far below what a faithful reproduction needs.
@@ -267,6 +282,10 @@ def main(argv=None):
                         "is chunked (100, all points), so blocking on time is "
                         "chunk-aligned; blocking on points would read every point "
                         "in every chunk regardless.")
+    p.add_argument("--start-times", type=int, default=None,
+                   help="spread the sample budget over this many distinct start "
+                        "times, taking a random point subset at each, instead of "
+                        "every point at few start times")
     p.add_argument("--stat-samples", type=int, default=2000000,
                    help="samples used to estimate normalisation statistics")
     p.add_argument("--val-max", type=int, default=200000,
@@ -336,7 +355,7 @@ def main(argv=None):
                   args.device, args.seed + i, max_samples=args.max_samples,
                   diag_weight=args.diag_weight, var_weights=vw,
                   point_block=args.point_block, val_ds=val_ds, warmup=args.warmup,
-                  val_max=args.val_max)
+                  val_max=args.val_max, n_starts=args.start_times)
 
     tag = args.outdir or f"mlp_{args.preset.replace('+', '_')}" + ("_temporal" if args.temporal else "")
     outdir = config.MODELS / tag

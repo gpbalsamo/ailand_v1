@@ -38,6 +38,7 @@ OUT="${OUT:-repro_${PRESET//+/_}}"
 MAXSAMP="${MAXSAMP:-12000000}"
 STATSAMP="${STATSAMP:-2000000}"
 VALMAX="${VALMAX:-400000}"
+STARTS="${STARTS:-}"
 BATCH="${BATCH:-46152}"
 EPOCHS1="${EPOCHS1:-80}"
 EPOCHS2="${EPOCHS2:-8}"
@@ -52,6 +53,7 @@ $PY -u -m ailand.train_mlp \
     --warmup 1000 --batch-size "$BATCH" --max-samples "$MAXSAMP" \
     --train-years 1998 2019 --val-years 2022 2022 \
     --stat-samples "$STATSAMP" --val-max "$VALMAX" \
+    ${STARTS:+--start-times "$STARTS"} \
     --point-block 100 --device cuda --outdir "$OUT"
 
 echo "=== Table B1 protocol: single-timestep, glacier+coastal excluded ==="
