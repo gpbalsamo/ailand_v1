@@ -101,6 +101,9 @@ def load_windows(path, feat, prog, diag, steps, split, max_samples=None,
     ds = xr.open_zarr(path)
     keep = np.flatnonzero(ds["split"].values == split)
     ds = ds.isel(x=keep)
+    # Offsets are computed over every site, so index them to this split.
+    if soil_offset:
+        soil_offset = {v: o[keep] for v, o in soil_offset.items()}
     npoint, ntime = ds.sizes["x"], ds.sizes["time"]
     n = ntime - steps
 
@@ -357,6 +360,13 @@ def evaluate_sites(model, norm, meta, tensors, sites, device="cpu", batch_size=2
                                  X[sl].to(device), prog_idx, lo, hi, X.shape[1])
         P.append(s[:, -1].cpu().numpy()); D.append(d[:, -1].cpu().numpy())
     P = np.concatenate(P); D = np.concatenate(D)
+    # rollout_batch returns diagnostics in STANDARDISED space -- the prognostic
+    # state is already physical because the increment is rescaled by the tendency
+    # scaler and added to the previous state, but the diagnostic head's output is
+    # not. Comparing it directly against physical observations makes the model
+    # term vanish, leaving an RMSE that is purely a statistic of the observations
+    # and therefore identical for every model.
+    D = D * norm.d_std[None, :] + norm.d_mean[None, :]
     Ob = O[:, -1].numpy()
     model.train()
 

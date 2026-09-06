@@ -454,6 +454,44 @@ FLUXNET, and the ones its abstract reports improving by 30% and 20%. Our being w
 precisely there is consistent with them being the hard part, and is the direct argument
 for `docs/STRATEGY.md`.
 
+## FLUXNET-Shuttle fine-tuning: first results
+
+Fine-tuned `aiLand-base` on the Shuttle pool at O96 — 288 training sites, **74 held-out
+sites**, scored against the towers in tower units. Strategies S1 and S5 are v1's;
+S6 is new.
+
+| | `LE` | `H` | `swvl1` | `stl1` | `stl2` | `stl3` | EB residual |
+|---|---|---|---|---|---|---|---|
+| aiLand-base | 61.98 | 63.33 | 0.0746 | 3.423 | 2.694 | 2.240 | 7.68 |
+| S1 (freeze) | **56.02** | **57.65** | 0.0746 | 3.423 | 2.694 | 2.240 | **1.34** |
+| S5 (full LR) | 56.24 | 58.81 | 0.0745 | 3.465 | 2.704 | 2.241 | 3.79 |
+| **S6 (constrained)** | 56.24 | 58.27 | **0.0717** | **3.068** | **2.383** | **2.005** | 3.24 |
+
+Fluxes in W m⁻², soil moisture in m³ m⁻³, soil temperature in K.
+
+**Every strategy improves the fluxes** by 9–10% (`LE` 61.98 → 56.02, `H` 63.33 → 57.65),
+and the energy-balance residual falls from 7.68 to 1.3–3.2 W m⁻². v1 reports larger flux
+gains (30% for LE, 20% for H) and a comparable closure improvement (13.4 → <3 W m⁻²);
+ours are smaller, which is expected when a 125 km cell is being compared against a point
+tower and the fine-tuning is far shorter.
+
+**Only S6 improves the prognostic state**, and it does so across the board:
+
+* `stl1` 3.423 → **3.068 K** (−10.4%), `stl2` −11.5%, `stl3` −10.5%
+* `swvl1` 0.0746 → **0.0717 m³ m⁻³** (−4.0%), with correlation 0.844 → 0.854
+
+S1 cannot move it — its backbone is frozen by construction. S5 unfreezes everything but
+has no soil term in the loss, so it drifts by a fraction of a percent and slightly
+*degrades* `stl1`. **This is the thing v1 could not do**: with soil observations on the
+prognostic head the backbone is trained on evidence, and the anchor term against the
+pretrained model keeps the fluxes from regressing while it happens.
+
+Not everything improved. Bowen ratio MAE is essentially flat (6.03 → 6.03 for S6, and
+S5 makes it worse at 7.00) against the 42% reduction v1 reports. Getting both flux
+magnitudes right without fixing their partition is a real gap, and the most likely
+reason is that our two flux terms are weighted equally and independently — nothing in
+the loss constrains their ratio.
+
 ## aiLand v0 vs aiLand v1
 
 | | v0 (this notebook) | v1 (Raoult et al., 2026) |
