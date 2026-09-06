@@ -171,14 +171,21 @@ mean R² 0.989. The 22-year training period did what it was expected to do for s
 (`snowc` 3.72× → 1.17×), confirming that two years simply cannot represent snow
 variability.
 
-**It did not close the diagnostic gap**, which barely moved (`2t` 1.61 → 1.49 K). So
-the earlier explanation — that the diagnostics were short of training data — was wrong.
-With the backbone at parity and extra diagnostic-head capacity already tested and found
-to make no difference, the remaining suspect is the **input set**: we withhold 19
-variables the store carries, including `fal` (forecast albedo), `asn` (snow albedo) and
-`src` (skin reservoir water). Albedo is the primary control on net shortwave, and the
-paper lists surface albedo among its physiographic fields (Sect. 2.1.2). All five
-lagging variables are surface-energy-balance quantities, which fits.
+**It did not close the diagnostic gap**, which barely moved (`2t` 1.61 → 1.49 K).
+Five hypotheses have now been tested and rejected:
+
+| Hypothesis | Test | Verdict |
+|---|---|---|
+| Too little training data | 2 yr → 22 yr | **No** — fixed snow (3.7× → 1.17×), not diagnostics |
+| Diagnostic head too small | 1 → 3 blocks, 3× flux weights | **No** — no change |
+| Missing albedo input | checked v1's Table 1 | **No** — v1 does not use albedo either; our input set already matches its 14 static + 7 dynamic + 3 temporal fields |
+| RMSE aggregation convention | pooled vs per-gridpoint | Partly — `LE` 1.54× → 1.38×, rest ~5% |
+| Too few distinct start times | 1,040 → 30,000, same budget | **No** — `2t` 1.4862 → 1.4836 K, i.e. nothing |
+
+What remains is the gradient budget: we are still ~5–10× short of the paper's, whose
+every update spans all land points. That is a resource difference, not a method one.
+With the prognostic state at parity and stable in free rollout, this is a good enough
+reproduction to build on.
 
 Free autoregressive rollout through 2022, same points: mean R² 0.974, `stl1` 2.45 K,
 `swvl1` 0.0191, `2t` 1.55 K — so the model is stable, not just accurate one step out.
