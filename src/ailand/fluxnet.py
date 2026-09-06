@@ -61,7 +61,8 @@ def inventory():
         with xr.open_dataset(r["flux"]) as f:
             r["lat"] = float(f.latitude.values.squeeze())
             r["lon"] = float(f.longitude.values.squeeze())
-            r["igbp"] = str(f["IGBP_veg_short"].values) if "IGBP_veg_short" in f else "?"
+            r["igbp"] = (str(f["IGBP_veg_short"].values.astype(str)).strip()
+                         if "IGBP_veg_short" in f else "?")
             r["n_halfhour"] = int(f.sizes["time"])
         out.append(r)
     df = pd.DataFrame(out).sort_values("site").reset_index(drop=True)
