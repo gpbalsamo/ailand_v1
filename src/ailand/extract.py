@@ -24,6 +24,12 @@ from . import config
 
 O96 = ("/lus/h1aiws01/project/ai-ml/datasets/"
        "aifs-rd-an-oper-isc8-mars-o96-1998-2024-6h-v1-ecland-era5met.zarr")
+N320 = ("/lus/h1aiws01/project/ai-ml/datasets/"
+        "aifs-rd-an-oper-iscb-mars-n320-1998-2024-6h-v2-ecland-era5met.zarr")
+
+#: Same field, different name between grids. The N320 store suffixes its static
+#: fields with _0 consistently; the O96 store does not for geopotential.
+ALIASES = {"z": ["z", "z_0"]}
 
 #: Variables to pull. Grouped the way the package uses them.
 KEEP_STATIC = [
@@ -56,6 +62,8 @@ def main(argv=None):
     p.add_argument("--out", default=str(config.REPO / "data" / "o96_subset.zarr"))
     p.add_argument("--lsm-threshold", type=float, default=0.5)
     p.add_argument("--seed", type=int, default=config.SEED)
+    p.add_argument("--include-points", default=None,
+                   help="file of grid indices to force into the sample")
     p.add_argument("--block", type=int, default=200,
                    help="timesteps per write block; caps peak memory")
     args = p.parse_args(argv)
@@ -66,9 +74,17 @@ def main(argv=None):
     lat = np.asarray(z["latitudes"][:])
     lon = np.asarray(z["longitudes"][:])
 
-    missing = [v for v in KEEP if v not in variables]
+    resolved = {}
+    for v in KEEP:
+        for cand in ALIASES.get(v, [v]):
+            if cand in variables:
+                resolved[v] = cand
+                break
+    missing = [v for v in KEEP if v not in resolved]
     if missing:
         raise KeyError(f"variables absent from source: {missing}")
+    if any(resolved[v] != v for v in resolved):
+        print("aliased:", {v: c for v, c in resolved.items() if c != v})
 
     t0 = int(np.searchsorted(dates, np.datetime64(f"{args.years[0]}-01-01T00:00:00")))
     t1 = int(np.searchsorted(dates, np.datetime64(f"{int(args.years[1]) + 1}-01-01T00:00:00")))
@@ -83,10 +99,16 @@ def main(argv=None):
     # drops the tail, which on a north-to-south ordered grid silently deletes the
     # southernmost land. linspace spans the full index range by construction.
     pts = land[np.linspace(0, land.size - 1, args.npoints).astype(np.int64)]
+    if args.include_points:
+        # Force-include specified cells (the flux-tower collocations), so the
+        # fine-tuning and pretraining sets share a geometry.
+        extra = np.loadtxt(args.include_points, dtype=np.int64, ndmin=1)
+        print(f"forcing in {len(extra)} listed points")
+        pts = np.concatenate([pts, extra])
     pts = np.unique(pts)
     print(f"sampling {pts.size} of them, lat {lat[pts].min():.1f} to {lat[pts].max():.1f}")
 
-    idx = [variables.index(v) for v in KEEP]
+    idx = [variables.index(resolved[v]) for v in KEEP]
     src = z["data"]
     times = dates[t0:t1].astype("datetime64[ns]")
 

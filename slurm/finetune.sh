@@ -23,9 +23,9 @@ cd "$REPO"; mkdir -p slurm/logs
 nvidia-smi --query-gpu=name --format=csv,noheader
 $PY -u -m ailand.finetune \
     --base "${BASE:-repro_v1_fluxes}" \
-    --data data/fluxnet_o96.zarr \
+    --data "${DATA:-data/fluxnet_o96.zarr}" \
     --strategies ${STRATS:-S1 S5 S6} \
     --rollout 4 --max-samples "${MAXSAMP:-2000000}" --batch-size 4096 \
     --soil-match "${SOILMATCH:-mean}" \
-    --anchor-data data/o96_1998_2022.zarr --anchor-samples 300000 \
+    --anchor-data "${ANCHOR:-data/o96_1998_2022.zarr}" --anchor-samples 300000 \
     --device cuda --outdir "${OUT:-finetune}"

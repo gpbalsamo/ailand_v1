@@ -1,0 +1,16 @@
+  50/529 sites
+  100/529 sites
+  150/529 sites
+  200/529 sites
+  250/529 sites
+  300/529 sites
+  350/529 sites
+  400/529 sites
+  450/529 sites
+  500/529 sites
+/perm/pad/ailand/src/ailand/fluxnet.py:328: SerializationWarning: variable None has data in the form of a dask array with dtype=object, which means it is being loaded into memory to determine a data type that can be safely stored on disk. To avoid this, coerce this variable to a fixed-size dtype with astype() before saving it.
+  out_ds.to_zarr(out, mode="w", consolidated=True)
+/perm/pad/ailand/src/ailand/fluxnet.py:328: SerializationWarning: variable None has data in the form of a dask array with dtype=object, which means it is being loaded into memory to determine a data type that can be safely stored on disk. To avoid this, coerce this variable to a fixed-size dtype with astype() before saving it.
+  out_ds.to_zarr(out, mode="w", consolidated=True)
+Wrote data/fluxnet_n320.zarr: 18992 times x 529 sites
+  sites with any valid observation: {'slhf': 436, 'sshf': 436, 'swvl1': 208, 'swvl2': 275, 'swvl3': 204, 'stl1': 289, 'stl2': 311, 'stl3': 227}

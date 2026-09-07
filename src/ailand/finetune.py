@@ -53,9 +53,20 @@ STRATEGIES = {
                soil_obs=True, anchor=1.0,
                desc="Constrained: soil observations on the prognostic head, "
                     "plus an anchor term against the pretrained model"),
+    "S7": dict(backbone_lr=5e-5, diag_lr=5e-5, epochs=20, deep_head=False,
+               soil_obs=True, anchor=1.0, bowen=1.0,
+               desc="Constrained + partition: as S6, with an explicit "
+                    "evaporative-fraction term constraining H against LE"),
 }
 
 OBS_FLUX = ["slhf", "sshf"]
+
+SECONDS_PER_STEP_T = 21600.0
+
+#: Available energy below which the flux partition is not meaningfully defined.
+#: Below this the ratio is dominated by instrument noise, and at night it is
+#: undefined altogether.
+EF_MIN_ENERGY = 20.0  # W m-2
 OBS_SOIL = ["swvl1", "swvl2", "swvl3", "stl1", "stl2", "stl3"]
 
 
@@ -221,6 +232,8 @@ def finetune(model, base, norm, meta, tensors, strategy, device="cpu",
     soil_p = [prog.index(v) for v in OBS_SOIL if v in prog]
     use_soil = bool(cfg.get("soil_obs")) and len(soil_p) > 0
     w_anchor = float(cfg.get("anchor", 0.0))
+    w_bowen = float(cfg.get("bowen", 0.0))
+    have_both = len(flux_d) == 2
 
     opt = build_optimizer(model, cfg["backbone_lr"], cfg["diag_lr"])
     g = torch.Generator().manual_seed(seed)
@@ -239,6 +252,33 @@ def finetune(model, base, norm, meta, tensors, strategy, device="cpu",
         if use_soil:
             parts["obs_soil"] = masked_huber(
                 (states[..., soil_p] - ob[..., soil_o]) / tend[soil_p], lossfn)
+        # Flux partition. Fitting LE and H independently can improve both
+        # magnitudes while leaving their ratio wrong, which is what the Bowen
+        # ratio measures. Evaporative fraction LE/(LE+H) is the stable way to
+        # constrain it: bounded in [0, 1], and free of the singularity a raw
+        # H/LE ratio has as LE approaches zero.
+        if w_bowen and have_both:
+            le_p = diags[..., flux_d[0]] * d_std[flux_d[0]] + d_mean[flux_d[0]]
+            h_p = diags[..., flux_d[1]] * d_std[flux_d[1]] + d_mean[flux_d[1]]
+            le_o = ob[..., flux_o[0]]
+            h_o = ob[..., flux_o[1]]
+            # Sign convention is downward-positive here, so upward turbulent
+            # fluxes are negative; the available energy is their magnitude.
+            den_p, den_o = le_p + h_p, le_o + h_o
+            thresh = EF_MIN_ENERGY * SECONDS_PER_STEP_T
+            # Require BOTH denominators to be safely away from zero before
+            # dividing. Clamping one of them instead lets a positive predicted
+            # sum map onto -1e-6 and the ratio explode, which is exactly what a
+            # first attempt here did: a training loss of 8e8.
+            ok = (torch.isfinite(den_o) & torch.isfinite(den_p)
+                  & (-den_o > thresh) & (-den_p > thresh))
+            one = torch.ones_like(den_p)
+            ef_p = le_p / torch.where(ok, den_p, one)
+            ef_o = le_o / torch.where(ok, den_o, one)
+            parts["partition"] = w_bowen * masked_huber(
+                torch.where(ok, ef_p - ef_o, torch.full_like(ef_p, float("nan"))),
+                lossfn)
+
         # ecLand targets keep everything the towers do not constrain in place.
         parts["ecland_prog"] = masked_huber((states - ypb) / tend, lossfn)
         if ydb is not None:
