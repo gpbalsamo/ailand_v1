@@ -102,7 +102,8 @@ def soil_offsets(path, prog, split=None):
 
 
 def load_windows(path, feat, prog, diag, steps, split, max_samples=None,
-                 time_block=2000, quiet=False, soil_offset=None):
+                 time_block=2000, quiet=False, soil_offset=None, years=None,
+                 contiguous=False):
     """Rollout windows over the site cells, with observations alongside.
 
     Returns model inputs, the ecLand targets (which keep the dynamics anchored
@@ -110,6 +111,8 @@ def load_windows(path, feat, prog, diag, steps, split, max_samples=None,
     everywhere -- the masked loss is what makes that usable.
     """
     ds = xr.open_zarr(path)
+    if years is not None:
+        ds = ds.sel(time=slice(*years))
     keep = np.flatnonzero(ds["split"].values == split)
     ds = ds.isel(x=keep)
     # Offsets are computed over every site, so index them to this split.
@@ -121,9 +124,20 @@ def load_windows(path, feat, prog, diag, steps, split, max_samples=None,
     obs_names = [f"obs_{v}" for v in OBS_FLUX + OBS_SOIL]
     starts = np.arange(n)
     if max_samples and npoint * n > max_samples:
-        starts = np.unique(np.linspace(0, n - 1, max(1, max_samples // npoint))
-                           .astype(np.int64))
+        if contiguous:
+            # Consecutive start times, so each site-day holds all four 6-hourly
+            # samples. An even spread over the whole record leaves one sample
+            # per day, which makes a "daily mean" a no-op -- the reason a first
+            # attempt at v1's daily-mean scoring changed nothing.
+            starts = np.arange(min(n, max(4, max_samples // npoint)))
+        else:
+            starts = np.unique(np.linspace(0, n - 1, max(1, max_samples // npoint))
+                               .astype(np.int64))
     ns = len(starts) * npoint
+    # Remember where each sample came from, so scores can be aggregated the way
+    # v1 does: "All metrics are computed on daily means" (Sect. 2.1.4).
+    sample_site = np.tile(np.arange(npoint), len(starts))
+    sample_time = np.repeat(starts + steps, npoint)
     if not quiet:
         print(f"  {split}: {ns:,} windows ({len(starts):,} starts x {npoint} sites)",
               flush=True)
@@ -164,7 +178,7 @@ def load_windows(path, feat, prog, diag, steps, split, max_samples=None,
             O[w:w + npoint] = ob[r + 1:r + 1 + steps].transpose(1, 0, 2)
             w += npoint
         del x, yp, yd, ob
-    return X, Yp, Yd, O, obs_names
+    return X, Yp, Yd, O, obs_names, sample_site, sample_time
 
 
 def build_optimizer(model, backbone_lr, diag_lr):
@@ -220,7 +234,7 @@ def finetune(model, base, norm, meta, tensors, strategy, device="cpu",
     lo, hi = mlp.bounds_tensors(prog, meta.get("profile", "o96"))
     lossfn = nn.SmoothL1Loss(beta=1.0, reduction="mean")
 
-    X, Yp, Yd, O, obs_names = tensors["train"]
+    X, Yp, Yd, O, obs_names = tensors["train"][:5]
     tend = torch.as_tensor(norm.tend, device=device)
     d_mean = torch.as_tensor(norm.d_mean, device=device)
     d_std = torch.as_tensor(norm.d_std, device=device)
@@ -374,8 +388,21 @@ def validate(model, norm, meta, tensors, device, batch_size, lossfn, tend,
 W_PER_J = 1.0 / 21600.0  # 6-hourly accumulated J m-2 -> mean W m-2
 
 
+def daily_mean(values, site, day):
+    """Average to one value per site-day, as v1 scores."""
+    key = site.astype(np.int64) * 100000 + day.astype(np.int64)
+    order = np.argsort(key, kind="stable")
+    k, v = key[order], values[order]
+    edges = np.flatnonzero(np.diff(k)) + 1
+    groups = np.split(v, edges)
+    with np.errstate(invalid="ignore"):
+        return np.array([np.nanmean(g) if np.isfinite(g).any() else np.nan
+                         for g in groups])
+
+
 @torch.no_grad()
-def evaluate_sites(model, norm, meta, tensors, sites, device="cpu", batch_size=2048):
+def evaluate_sites(model, norm, meta, tensors, sites, device="cpu", batch_size=2048,
+                   daily=True):
     """Score against the towers at held-out sites, in tower units.
 
     Beyond RMSE this reports the two physical diagnostics v1 uses, because a
@@ -390,7 +417,10 @@ def evaluate_sites(model, norm, meta, tensors, sites, device="cpu", batch_size=2
     prog, diag = meta["prognostic"], meta["diagnostic"]
     prog_idx = meta["prog_idx"]
     lo, hi = mlp.bounds_tensors(prog, meta.get("profile", "o96"))
-    X, Yp, Yd, O, obs_names = tensors
+    X, Yp, Yd, O, obs_names = tensors[:5]
+    s_site, s_time = (tensors[5], tensors[6]) if len(tensors) > 6 else (None, None)
+    # 6-hourly steps -> day index.
+    day = (s_time // 4) if s_time is not None else None
     model.eval()
 
     P, D = [], []
@@ -410,12 +440,18 @@ def evaluate_sites(model, norm, meta, tensors, sites, device="cpu", batch_size=2
     Ob = O[:, -1].numpy()
     model.train()
 
+    def agg(pred, obs):
+        """Reduce to daily means at each site before scoring, if we can."""
+        if not daily or day is None:
+            return pred, obs
+        return daily_mean(pred, s_site, day), daily_mean(obs, s_site, day)
+
     rows = {}
     for v in OBS_FLUX:
         if v not in diag:
             continue
-        pred = D[:, diag.index(v)] * W_PER_J
-        obs = Ob[:, obs_names.index(f"obs_{v}")] * W_PER_J
+        pred, obs = agg(D[:, diag.index(v)] * W_PER_J,
+                        Ob[:, obs_names.index(f"obs_{v}")] * W_PER_J)
         m = np.isfinite(obs) & np.isfinite(pred)
         if m.sum() < 100:
             continue
@@ -426,8 +462,8 @@ def evaluate_sites(model, norm, meta, tensors, sites, device="cpu", batch_size=2
     for v in OBS_SOIL:
         if v not in prog:
             continue
-        pred = P[:, prog.index(v)]
-        obs = Ob[:, obs_names.index(f"obs_{v}")]
+        pred, obs = agg(P[:, prog.index(v)],
+                        Ob[:, obs_names.index(f"obs_{v}")])
         m = np.isfinite(obs) & np.isfinite(pred)
         if m.sum() < 100:
             continue
@@ -438,10 +474,10 @@ def evaluate_sites(model, norm, meta, tensors, sites, device="cpu", batch_size=2
 
     # Bowen ratio and energy-balance residual, both in tower units.
     if all(v in diag for v in OBS_FLUX):
-        le_p = D[:, diag.index("slhf")] * W_PER_J
-        h_p = D[:, diag.index("sshf")] * W_PER_J
-        le_o = Ob[:, obs_names.index("obs_slhf")] * W_PER_J
-        h_o = Ob[:, obs_names.index("obs_sshf")] * W_PER_J
+        le_p, le_o = agg(D[:, diag.index("slhf")] * W_PER_J,
+                         Ob[:, obs_names.index("obs_slhf")] * W_PER_J)
+        h_p, h_o = agg(D[:, diag.index("sshf")] * W_PER_J,
+                       Ob[:, obs_names.index("obs_sshf")] * W_PER_J)
         m = np.isfinite(le_o) & np.isfinite(h_o) & (le_o > 5.0)
         if m.sum() > 100:
             br_p = np.clip(h_p[m] / le_p[m], -20, 20)
@@ -514,13 +550,13 @@ def main(argv=None):
 
     tensors = {}
     for split in ("train", "val"):
-        X, Yp, Yd, O, obs_names = load_windows(
+        X, Yp, Yd, O, obs_names, ss, st = load_windows(
             args.data, feat, prog, diag, args.rollout, split,
             max_samples=args.max_samples if split == "train" else args.max_samples // 4,
             soil_offset=offs)
         tensors[split] = (torch.as_tensor(X), torch.as_tensor(Yp),
                           torch.as_tensor(Yd) if Yd is not None else None,
-                          torch.as_tensor(O), obs_names)
+                          torch.as_tensor(O), obs_names, ss, st)
 
     anchor = None
     if args.anchor_data:

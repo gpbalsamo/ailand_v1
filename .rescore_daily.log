@@ -1,0 +1,39 @@
+
+--- base (DAILY MEANS, as v1 scores) (held-out sites, vs towers) ---
+variable                 n       RMSE       bias       r
+slhf                 44633      36.52 W/m2     0.9474   0.651
+sshf                 44954      41.15 W/m2      14.75   0.706
+swvl1                29136    0.08559        0.005384   0.787
+swvl2                34417    0.08513        0.007147   0.763
+swvl3                28610    0.06162       0.0002703   0.831
+stl1                 36887      2.495          0.2923   0.971
+stl2                 38645      2.032         0.03124   0.977
+stl3                 31281      1.794        -0.05559   0.975
+Bowen ratio MAE        215      4.474
+EB residual          44625      15.79 W/m2  (rmse 47.6)
+
+--- S1 (DAILY MEANS, as v1 scores) (held-out sites, vs towers) ---
+variable                 n       RMSE       bias       r
+slhf                 44633      32.41 W/m2      5.334   0.731
+sshf                 44954      35.83 W/m2      5.601   0.758
+swvl1                29136    0.08559        0.005384   0.787
+swvl2                34417    0.08513        0.007147   0.763
+swvl3                28610    0.06162       0.0002703   0.831
+stl1                 36887      2.495          0.2923   0.971
+stl2                 38645      2.032         0.03124   0.977
+stl3                 31281      1.794        -0.05559   0.975
+Bowen ratio MAE        215      4.809
+EB residual          44625      10.96 W/m2  (rmse 43.3)
+
+--- S6 (DAILY MEANS, as v1 scores) (held-out sites, vs towers) ---
+variable                 n       RMSE       bias       r
+slhf                 44633      32.11 W/m2      1.904   0.728
+sshf                 44954      37.32 W/m2      9.056   0.745
+swvl1                29136    0.07846        0.007868   0.821
+swvl2                34417    0.08098        0.008301   0.786
+swvl3                28610    0.05979       0.0002593   0.839
+stl1                 36887      2.227          0.4646   0.974
+stl2                 38645      1.727        -0.04407   0.982
+stl3                 31281      1.652         -0.1178   0.979
+Bowen ratio MAE        215       4.39
+EB residual          44625      10.99 W/m2  (rmse 44)
