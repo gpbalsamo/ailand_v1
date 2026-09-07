@@ -1,4 +1,4 @@
-# ailand-ecland
+# ailand_v1
 
 Reproducing and extending **aiLand**, the machine-learning emulator of ECMWF's
 ecLand land surface model — starting from the original XGBoost prototype and
