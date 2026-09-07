@@ -492,6 +492,89 @@ magnitudes right without fixing their partition is a real gap, and the most like
 reason is that our two flux terms are weighted equally and independently — nothing in
 the loss constrains their ratio.
 
+## N320: what it changed, and what it did not
+
+Moving to N320 (~31 km) from O96 (~125 km) was worth it for the observational work and
+not for the emulator.
+
+**For fine-tuning it helped a lot**, because the limiting factor there was collocation:
+
+| | O96 | N320 |
+|---|---|---|
+| tower cells retained | 362 | **529** |
+| ... with soil observations | 335 | **475** |
+| median site-to-cell distance | 46.2 km | **12.7 km** |
+| base model `LE` RMSE at towers | 61.98 | **51.29** W m⁻² |
+
+The last row is the same weights on a finer grid — a 17% error reduction bought purely
+by comparing a tower against a 31 km cell instead of a 125 km one.
+
+**For the emulator it did nothing.** Training a native N320 base (Table B1 protocol,
+single-timestep, glacier and coastal excluded):
+
+| | ours, O96 base | ours, N320 base | paper N320 |
+|---|---|---|---|
+| `swvl1` | 0.01064 | 0.01123 | 0.01069 |
+| `stl1` | 1.117 | 1.163 | 1.055 |
+| `snowc` | 0.01717 | 0.01882 | 0.01644 |
+| `2t` | 1.486 | 1.550 | **0.616** |
+| `skt` | 1.866 | 1.980 | 1.038 |
+| `LE` | 14.95 | 14.76 | 9.18 |
+
+Prognostics stay at parity (1.04–1.10×). Diagnostics are unchanged or marginally worse,
+while the paper's *improve* with resolution — its `2t` goes 0.876 at O96 to 0.616 at
+N320 — so the ratio widens from 1.70× to 2.52×. **v1 extracts something from the finer
+grid that we do not.** The paper attributes its own gain to "richer spatial
+heterogeneity captured at higher resolution"; whatever that is, our diagnostic branch is
+not picking it up. That makes resolution the sixth rejected hypothesis for the
+diagnostic gap.
+
+One confound worth stating: the N320 base trained on 2010–2022 (13 years) against the
+O96 base's 1998–2019 (22 years), because that is what the extraction covered. Since
+22 years did not help the diagnostics either, this is unlikely to be the explanation.
+
+## Fine-tuning against the towers, scored as v1 scores
+
+Daily means at held-out sites over 2020–2022, against v1's Table 6 (daily means, 17
+held-out sites, 2020–2023):
+
+| | LE RMSE | LE r | H RMSE | H r |
+|---|---|---|---|---|
+| v1 base | 31.9 | 0.722 | 27.2 | 0.657 |
+| **v1 S1** | **22.5** | **0.785** | **22.3** | **0.713** |
+| ours base | 36.5 | 0.651 | 41.2 | 0.706 |
+| ours S1 | 32.4 | 0.731 | 35.8 | **0.758** |
+| ours S6 | 32.1 | 0.728 | 37.3 | 0.745 |
+
+LE RMSE is 43% above v1's and H 61% above, but the correlations are close — and on `H`
+ours is *better* than v1 both before and after fine-tuning. In improvement terms we
+reach 11–13% against v1's 30% and 18%, so roughly half.
+
+Note the validation sets differ: v1 holds out 17 FluxDataKit sites, we hold out ~106
+from the Shuttle pool, which deliberately includes biomes PLUMBER2 under-represents and
+is therefore a harder test.
+
+### The partition term
+
+6-hourly scoring, so the Bowen sample is large enough to mean something:
+
+| | LE | H | `swvl1` | Bowen MAE | EB residual |
+|---|---|---|---|---|---|
+| base | 51.29 | 59.21 | 0.0925 | 6.996 | 9.193 |
+| S1 (freeze) | 45.41 | **54.29** | 0.0925 | 8.446 | 4.792 |
+| S6 (constrained) | 44.32 | 56.34 | 0.0862 | 6.818 | 3.935 |
+| **S7 (+ partition)** | **44.28** | 56.09 | **0.0861** | **6.728** | **−0.0001** |
+
+S7 drives energy-balance closure to essentially **zero** (v1 reports 13.4 → <3 W m⁻²),
+and is best on LE and soil moisture. But Bowen ratio MAE improves only 3.8% against
+v1's 42%, which is not what constraining evaporative fraction should do — EF *is* the
+ratio. The likely explanation is that Bowen MAE is dominated by heavy-tailed outliers
+the ±20 clip does not tame, so the metric is not measuring what the term fixes.
+
+Worth noting S1 *degrades* the Bowen ratio (6.996 → 8.446) while improving both flux
+magnitudes: fitting LE and H independently can get both closer and their partition
+further away. That is the pathology S7 exists to prevent, and it does prevent it.
+
 ## aiLand v0 vs aiLand v1
 
 | | v0 (this notebook) | v1 (Raoult et al., 2026) |
