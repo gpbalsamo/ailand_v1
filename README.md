@@ -1,6 +1,6 @@
 # ailand_v1
 
-Reproducing and extending **aiLand**, the machine-learning emulator of ECMWF's
+Reproducing and exploring **aiLand**, the machine-learning emulator of ECMWF's
 ecLand land surface model — from the original XGBoost prototype (v0) to the
 published MLP architecture (v1), then beyond it with FLUXNET-Shuttle
 observational fine-tuning.
@@ -102,7 +102,7 @@ above.
 loaded anywhere in this repo. Fine-tuned on the FLUXNET-Shuttle pool at N320,
 scored **against the tower observations** (not ecLand) at held-out sites, 6-hourly:
 RMSE, Pearson r and, for the fluxes jointly, Bowen-ratio MAE and the energy-balance
-residual (mean of predicted-minus-observed `H+LE`).
+(EB) residual (mean of predicted-minus-observed `H+LE`).
 
 | | LE RMSE | LE r | H RMSE | H r | `swvl1` | Bowen MAE | EB residual |
 |---|---|---|---|---|---|---|---|
@@ -112,8 +112,9 @@ residual (mean of predicted-minus-observed `H+LE`).
 
 Every strategy improves the fluxes 9–10% in RMSE and r. Only the constrained
 strategies (S6/S7) also improve the prognostic soil state (`swvl1`, `stl1-3`), and
-adding the evaporative-fraction partition term (S7) drives energy-balance closure to
-essentially zero. Full strategy comparison, the O96→N320 ablation, and scoring
+adding the evaporative-fraction partition term (S7) is strikingly effective at
+closing the energy balance: the EB residual drops from 9.19 to essentially
+**zero** (−0.0001 W m⁻²). Full strategy comparison, the O96→N320 ablation, and scoring
 against the paper's own tables (which hold out different, FluxDataKit, sites) are
 in `docs/RESULTS.md`.
 
