@@ -5,8 +5,6 @@ ecLand land surface model — from the original XGBoost prototype (v0) to the
 published MLP architecture (v1), then beyond it with FLUXNET-Shuttle
 observational fine-tuning.
 
-*Private repo, for ECMWF colleagues.*
-
 ---
 
 ## What this is
