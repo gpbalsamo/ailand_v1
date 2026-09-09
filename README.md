@@ -63,21 +63,34 @@ and [`ecland-portal`](https://github.com/gpbalsamo/ecland-portal).
 
 ### v1 reproduction
 
-Full v1 recipe on O96 (11,538 land points, 1998–2019 training, 2022 held out),
-scored exactly as the paper's Table B1 — single-timestep, glacier and coastal excluded:
+Full v1 recipe on O96 (11,538 land points, 1998–2019 training, 2022 held out).
+**Metric and reference:** RMSE and R² of single-timestep predictions against
+**ecLand itself** (not ERA5, not observations — this is a reproduction of the
+emulator, scored the way the paper scores Table B1), on the held-out year, glacier
+and coastal points excluded as the paper does throughout. `H`/`LE` are the
+time-averaged flux over each 6-hourly step, in W m⁻²; R² is not in the paper's own
+table, it is added here.
 
-| | paper | ours | ratio |
-|---|---|---|---|
-| `swvl1` | 0.01040 | 0.010638 | 1.02× |
-| `stl1` | 1.056 K | 1.117 K | 1.06× |
-| `snowc` | 0.01462 | 0.01717 | 1.17× |
-| `2t` | 0.876 K | 1.486 K | 1.70× |
-| `LE` | 9.68 W m⁻² | 14.95 | 1.54× |
+| | paper RMSE | ours RMSE | ratio | ours R² |
+|---|---|---|---|---|
+| `swvl1` | 0.01040 | 0.010638 | 1.02× | 0.996 |
+| `swvl2` | 0.003115 | 0.003180 | 1.02× | 1.000 |
+| `swvl3` | 0.000746 | 0.000738 | **0.99×** | 1.000 |
+| `stl1` | 1.056 K | 1.117 K | 1.06× | 0.993 |
+| `stl2` | 0.138 K | 0.154 K | 1.12× | 1.000 |
+| `stl3` | 0.032 K | 0.0109 K | **0.34×** | 1.000 |
+| `snowc` | 0.01462 | 0.01717 | 1.17× | 0.997 |
+| `2d` | 0.857 K | 2.039 K | 2.38× | 0.977 |
+| `2t` | 0.876 K | 1.486 K | 1.70× | 0.990 |
+| `skt` | 1.081 K | 1.866 K | 1.73× | 0.988 |
+| `H` | 11.57 W m⁻² | 17.24 | 1.49× | 0.960 |
+| `LE` | 9.68 W m⁻² | 14.95 | 1.54× | 0.963 |
 
-**The prognostic state reproduces v1** — all seven prognostic variables at parity or
-better, mean R² 0.989. The diagnostic branch (`2t`, `skt`, the turbulent fluxes) still
-lags; five candidate causes have been tested and rejected (data volume, head size,
-missing inputs, RMSE convention, sample diversity) — see `docs/RESULTS.md`.
+**The prognostic state (the first seven rows) reproduces v1** — all at parity or
+better, mean R² 0.989. The diagnostic branch (`2t`, `skt`, `H`, `LE`) has RMSE
+1.5–2.4× the paper's despite R² staying ≥0.96; five candidate causes have been
+tested and rejected (data volume, head size, missing inputs, RMSE convention,
+sample diversity) — see `docs/RESULTS.md`.
 
 Adding runoff, evaporation and GPP as extra diagnostic outputs is free: evaporation
 reaches R² 0.964, GPP 0.984, runoff 0.335/0.435, with no cost to the seven variables
@@ -85,20 +98,26 @@ above.
 
 ### FLUXNET-Shuttle fine-tuning
 
-Fine-tuned `aiLand-base` on the Shuttle pool at N320, scored 6-hourly at held-out
-towers:
+**"aiLand-base" is this repo's own reproduction above** (the O96 checkpoint,
+`models/repro_v1_fluxes`) — **not** the paper's published checkpoint from
+[Zenodo](https://doi.org/10.5281/zenodo.20764680); no weights from the paper are
+loaded anywhere in this repo. Fine-tuned on the FLUXNET-Shuttle pool at N320,
+scored **against the tower observations** (not ecLand) at held-out sites, 6-hourly:
+RMSE, Pearson r and, for the fluxes jointly, Bowen-ratio MAE and the energy-balance
+residual (mean of predicted-minus-observed `H+LE`).
 
-| | LE | H | `swvl1` | Bowen MAE | EB residual |
-|---|---|---|---|---|---|
-| base | 51.29 | 59.21 | 0.0925 | 6.996 | 9.193 |
-| S1 (freeze) | 45.41 | **54.29** | 0.0925 | 8.446 | 4.792 |
-| **S7 (constrained + partition)** | **44.28** | 56.09 | **0.0861** | **6.728** | **≈0** |
+| | LE RMSE | LE r | H RMSE | H r | `swvl1` | Bowen MAE | EB residual |
+|---|---|---|---|---|---|---|---|
+| base | 51.29 | 0.714 | 59.21 | 0.787 | 0.0925 | 6.996 | 9.193 |
+| S1 (freeze) | 45.41 | 0.784 | **54.29** | **0.819** | 0.0925 | 8.446 | 4.792 |
+| **S7 (constrained + partition)** | **44.28** | **0.793** | 56.09 | 0.805 | **0.0861** | **6.728** | **≈0** |
 
-Every strategy improves the fluxes 9–10%. Only the constrained strategies (S6/S7)
-also improve the prognostic soil state (`swvl1`, `stl1-3`), and adding the
-evaporative-fraction partition term (S7) drives energy-balance closure to
+Every strategy improves the fluxes 9–10% in RMSE and r. Only the constrained
+strategies (S6/S7) also improve the prognostic soil state (`swvl1`, `stl1-3`), and
+adding the evaporative-fraction partition term (S7) drives energy-balance closure to
 essentially zero. Full strategy comparison, the O96→N320 ablation, and scoring
-against the paper's own tables are in `docs/RESULTS.md`.
+against the paper's own tables (which hold out different, FluxDataKit, sites) are
+in `docs/RESULTS.md`.
 
 ---
 

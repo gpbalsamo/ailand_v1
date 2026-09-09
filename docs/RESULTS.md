@@ -76,22 +76,35 @@ Full v1 recipe: O96, **11,538 land points, 1998–2019 training**, 2022 held out
 validation and best-checkpoint selection, 6×512, R=4→R=8, Adam 5e-4→3e-7 cosine with
 1000-step warmup, batch 46,152. One A100, 5 h.
 
-Scored exactly as the paper's Table B1 — single-timestep, glacier and coastal excluded:
+**Metric and reference**, matching the paper's own Table B1 exactly: RMSE (and, added
+here, R² — the paper's table does not report it) of **single-timestep** predictions
+against **ecLand itself** (`ailand.evaluate.score`, `sklearn.metrics.r2_score`) — not
+against ERA5 or FLUXNET observations, and not a free rollout (that is the separate
+Table 5 protocol used further down). Glacier and coastal points excluded, as the paper
+does throughout. `H`/`LE` are the time-averaged flux over each 6-hourly step, in W m⁻².
+All numbers below, ours and R², are from `slurm/logs/ailand-repro.33370597.out`
+(held-out/test period, i.e. 2022).
 
-| | paper O96 | ours (2 yr) | **ours (22 yr)** | ratio |
-|---|---|---|---|---|
-| `swvl1` | 0.01040 | 0.01050 | **0.010638** | 1.02× |
-| `swvl2` | 0.003115 | 0.003250 | **0.003180** | 1.02× |
-| `swvl3` | 0.000746 | 0.000791 | **0.000738** | **0.99×** |
-| `stl1` | 1.056 K | 1.082 K | **1.117 K** | 1.06× |
-| `stl2` | 0.138 K | 0.166 K | **0.154 K** | 1.12× |
-| `stl3` | 0.032 K | 0.0128 K | **0.0109 K** | **0.34×** |
-| `snowc` | 0.01462 | 0.05435 | **0.01717** | 1.17× |
-| `2d` | 0.857 K | 2.099 K | 2.039 K | 2.38× |
-| `2t` | 0.876 K | 1.608 K | 1.486 K | 1.70× |
-| `skt` | 1.081 K | 1.986 K | 1.866 K | 1.73× |
-| `H` | 11.57 W m⁻² | 17.62 | 17.24 | 1.49× |
-| `LE` | 9.68 W m⁻² | 15.44 | 14.95 | 1.54× |
+| | paper O96 (RMSE) | ours, 2 yr (RMSE) | **ours, 22 yr (RMSE)** | ratio | **ours R²** |
+|---|---|---|---|---|---|
+| `swvl1` | 0.01040 | 0.01050 | **0.010638** | 1.02× | 0.996 |
+| `swvl2` | 0.003115 | 0.003250 | **0.003180** | 1.02× | 1.000 |
+| `swvl3` | 0.000746 | 0.000791 | **0.000738** | **0.99×** | 1.000 |
+| `stl1` | 1.056 K | 1.082 K | **1.117 K** | 1.06× | 0.993 |
+| `stl2` | 0.138 K | 0.166 K | **0.154 K** | 1.12× | 1.000 |
+| `stl3` | 0.032 K | 0.0128 K | **0.0109 K** | **0.34×** | 1.000 |
+| `snowc` | 0.01462 | 0.05435 | **0.01717** | 1.17× | 0.997 |
+| `2d` | 0.857 K | 2.099 K | 2.039 K | 2.38× | 0.977 |
+| `2t` | 0.876 K | 1.608 K | 1.486 K | 1.70× | 0.990 |
+| `skt` | 1.081 K | 1.986 K | 1.866 K | 1.73× | 0.988 |
+| `H` | 11.57 W m⁻² | 17.62 | 17.24 | 1.49× | 0.960 |
+| `LE` | 9.68 W m⁻² | 15.44 | 14.95 | 1.54× | 0.963 |
+
+R² stays high (≥0.96) even where the RMSE ratio against the paper is worst (`2t`,
+`skt`, `H`, `LE`) — the paper's table has no equivalent column, so this is the one
+number in this section that has no "ratio vs paper" to report. It says the fit is
+still good in an absolute sense; the RMSE ratio is the more demanding comparison,
+because it is relative to the paper's own, much better-resourced, run.
 
 **The prognostic state reproduces v1** — every one of the seven at parity or better,
 mean R² 0.989. The 22-year training period did what it was expected to do for snow
@@ -322,18 +335,27 @@ for `docs/STRATEGY.md`.
 
 ## FLUXNET-Shuttle fine-tuning: first results
 
-Fine-tuned `aiLand-base` on the Shuttle pool at O96 — 288 training sites, **74 held-out
-sites**, scored against the towers in tower units. Strategies S1 and S5 are v1's;
-S6 is new.
+**"aiLand-base" here is this repo's own reproduction** (the O96 `v1+fluxes` MLP
+checkpoint above, `models/repro_v1_fluxes`, passed as `--base` in `slurm/finetune.sh`
+— its default), **not the paper's published `aiLand-base` checkpoint** from
+[Zenodo](https://doi.org/10.5281/zenodo.20764680). The two share a name because ours
+is meant to reproduce that checkpoint, and by the Table B1 numbers above it does — but
+no weights from the paper are loaded anywhere in this repo.
 
-| | `LE` | `H` | `swvl1` | `stl1` | `stl2` | `stl3` | EB residual |
-|---|---|---|---|---|---|---|---|
-| aiLand-base | 61.98 | 63.33 | 0.0746 | 3.423 | 2.694 | 2.240 | 7.68 |
-| S1 (freeze) | **56.02** | **57.65** | 0.0746 | 3.423 | 2.694 | 2.240 | **1.34** |
-| S5 (full LR) | 56.24 | 58.81 | 0.0745 | 3.465 | 2.704 | 2.241 | 3.79 |
-| **S6 (constrained)** | 56.24 | 58.27 | **0.0717** | **3.068** | **2.383** | **2.005** | 3.24 |
+Fine-tuned on the Shuttle pool at O96 — 288 training sites, **74 held-out
+sites**, scored against the towers (FLUXNET-Shuttle observations, not ecLand) in
+tower units: RMSE, bias and Pearson r per variable, 6-hourly
+(`ailand.finetune.evaluate_sites`). Strategies S1 and S5 are v1's; S6 is new.
 
-Fluxes in W m⁻², soil moisture in m³ m⁻³, soil temperature in K.
+| | `LE` RMSE | `LE` r | `H` RMSE | `H` r | `swvl1` | `stl1` | `stl2` | `stl3` | EB residual |
+|---|---|---|---|---|---|---|---|---|---|
+| aiLand-base | 61.98 | 0.694 | 63.33 | 0.781 | 0.0746 | 3.423 | 2.694 | 2.240 | 7.68 |
+| S1 (freeze) | **56.02** | **0.746** | **57.65** | **0.823** | 0.0746 | 3.423 | 2.694 | 2.240 | **1.34** |
+| S5 (full LR) | 56.24 | 0.745 | 58.81 | 0.817 | 0.0745 | 3.465 | 2.704 | 2.241 | 3.79 |
+| **S6 (constrained)** | 56.24 | 0.743 | 58.27 | 0.818 | **0.0717** | **3.068** | **2.383** | **2.005** | 3.24 |
+
+Fluxes in W m⁻², soil moisture in m³ m⁻³, soil temperature in K. `r` is the Pearson
+correlation between prediction and tower observation; source: `.rescore.log`.
 
 **Every strategy improves the fluxes** by 9–10% (`LE` 61.98 → 56.02, `H` 63.33 → 57.65),
 and the energy-balance residual falls from 7.68 to 1.3–3.2 W m⁻². v1 reports larger flux
@@ -426,14 +448,16 @@ is therefore a harder test.
 
 ### The partition term
 
-6-hourly scoring, so the Bowen sample is large enough to mean something:
+6-hourly scoring against the towers, N320, so the Bowen sample is large enough to
+mean something (source: `slurm/logs/ailand-ft.34054555.out` for base/S1/S6,
+`slurm/logs/ailand-ft.34061535.out` for the corrected S7):
 
-| | LE | H | `swvl1` | Bowen MAE | EB residual |
-|---|---|---|---|---|---|
-| base | 51.29 | 59.21 | 0.0925 | 6.996 | 9.193 |
-| S1 (freeze) | 45.41 | **54.29** | 0.0925 | 8.446 | 4.792 |
-| S6 (constrained) | 44.32 | 56.34 | 0.0862 | 6.818 | 3.935 |
-| **S7 (+ partition)** | **44.28** | 56.09 | **0.0861** | **6.728** | **−0.0001** |
+| | LE RMSE | LE r | H RMSE | H r | `swvl1` | Bowen MAE | EB residual |
+|---|---|---|---|---|---|---|---|
+| base | 51.29 | 0.714 | 59.21 | 0.787 | 0.0925 | 6.996 | 9.193 |
+| S1 (freeze) | 45.41 | 0.784 | **54.29** | **0.819** | 0.0925 | 8.446 | 4.792 |
+| S6 (constrained) | 44.32 | 0.793 | 56.34 | 0.804 | 0.0862 | 6.818 | 3.935 |
+| **S7 (+ partition)** | **44.28** | **0.793** | 56.09 | 0.805 | **0.0861** | **6.728** | **−0.0001** |
 
 S7 drives energy-balance closure to essentially **zero** (v1 reports 13.4 → <3 W m⁻²),
 and is best on LE and soil moisture. But Bowen ratio MAE improves only 3.8% against
