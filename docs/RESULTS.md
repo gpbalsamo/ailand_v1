@@ -1,91 +1,66 @@
 # Full results and experiment log
 
 The detailed numbers behind the headline results in [`README.md`](../README.md):
-every ablation, every rejected hypothesis, and the lessons learnt getting here.
-Read [`METHODS.md`](METHODS.md) first if you want to know what a script or term
-means rather than what it found.
+every ablation, rejected hypothesis, and lesson learnt getting here. Read
+[`METHODS.md`](METHODS.md) first for what a script or term means, rather than
+what it found.
 
 ---
 
 ## Lessons learnt
 
-The most useful output of this exercise is not the model, it is the list of things
-that were quietly wrong. Every one produced plausible-looking results.
+The most useful output of this exercise is the list of things that were quietly
+wrong. Every one produced plausible-looking results.
 
-### 1. Physically obvious is not empirically right
-
-Adding the snow prognostics `sd` and `rsn` looked obligatory — `snowc` cannot close a
-snow budget without them. Measured, it made snow *worse*: `snowc` fell from 0.55 to
-−1.49, because `sd` and `rsn` roll out badly themselves and feed that error back. v1
-makes the opposite choice: promote `snowc` to prognostic although it is diagnostic in
-ecLand, and leave the snow mass variables out of the state. We reproduced that decision
-from measurement before finding it in Table 1.
-
-### 2. Read the error signature, not just the error
-
-Turbulent fluxes scored R² −0.34 with near-zero bias. That combination is a *phase*
-error, not an underfit — and it was: diagnostics are trained on the target at t+1 from
-the input at t, but the rollout wrote each prediction at t. A six-hour shift, harmless
-for `2t` (which loses 2% of R² to it) and fatal for fluxes, whose diurnal cycle it moves
-a quarter period. Fixing the index alone, with **no retraining**, moved `slhf` −0.34 →
-0.96, `sshf` −0.67 → 0.96, `skt` 9.39 K → 2.13 K.
-
-### 3. Silent NaN propagation deletes whole variables
-
-114 missing values out of 33.7 million made a plain `mean`/`std` NaN, which made every
-`slhf` prediction NaN, which the scorer then masked out — so the variable vanished from
-the results table with no error anywhere. Statistics are now NaN-aware and an
-entirely-missing column raises.
-
-### 4. Scale the targets, or the loss is only about the biggest number
-
-Increment magnitudes span four orders of magnitude (`stl1` ~2.5 K against `ssro`
-~1.5×10⁻⁴ m). An unweighted least-squares loss is *entirely* soil temperature and snow.
-This is v1's "tendency scaler", and it is the same idea as dividing by observation error
-variance in a variational cost function. The same trap caught the diagnostics separately:
-in physical units `slhf` ~10⁷ J m⁻² swamps evaporation ~10⁻³ m.
-
-### 5. Judge by metric, never by figure
-
-v0's headline figure looks convincing because its y-range is dominated by the seasonal
-cycle, and no metric was ever computed on the held-out year at all — the reported R² of
-0.99 was `eval_set` pointed at the training data, so it is in-sample and means nothing.
-Scored properly on 2022, v0's soil and snow state comes out at mean R² **0.841**, which
-is a perfectly respectable prototype. But that is something you can only say once you
-measure it.
-
-### 6. Compare like with like before concluding anything is wrong
-
-The MLP looked far short of v1 until three things were corrected: the misalignment
-above, **excluding glacier and coastal points** (which v1 does throughout, and which are
-22.3% of the O96 land set with ~3× the soil temperature error), and scoring a free
-3-year rollout against the paper's *single-timestep* table. Corrected, the prognostic
-state is at parity — see below.
-
-### 7. Small silent bugs in your own tooling
-
-`land[::step][:npoints]` truncates rather than spans, so the first global sample
-silently contained nothing south of 30°S. Sampling is systematic, not stratified — a
-weakness, given the biomes this work cares about are the rare ones.
+1. **Physically obvious is not empirically right.** `snowc` cannot close a snow
+   budget without the snow-mass prognostics `sd`/`rsn` — yet adding them made
+   snow *worse* (`snowc` 0.55 → −1.49): they roll out badly themselves and feed
+   that error back. v1 makes the opposite choice (promote `snowc`, drop snow
+   mass from the state), and we found that from measurement before Table 1.
+2. **Read the error signature, not just the error.** Turbulent fluxes scored R²
+   −0.34 with near-zero bias — a *phase* error, since diagnostics train on t+1
+   from t but the rollout wrote each prediction at t. Fixing the index alone,
+   **no retraining**, moved `slhf` −0.34 → 0.96, `sshf` −0.67 → 0.96, `skt`
+   9.39 K → 2.13 K.
+3. **Silent NaN propagation deletes whole variables.** 114 missing values out of
+   33.7 million made `mean`/`std` NaN, which made every `slhf` prediction NaN,
+   which the scorer masked out — the variable vanished with no error anywhere.
+   Statistics are now NaN-aware; an entirely-missing column raises.
+4. **Scale the targets, or the loss is only about the biggest number.** Increments
+   span four orders of magnitude (`stl1` ~2.5 K vs `ssro` ~1.5×10⁻⁴ m); unweighted
+   least-squares is *entirely* soil temperature and snow. This is v1's tendency
+   scaler. The diagnostics hit the same trap in physical units: `slhf` ~10⁷ J m⁻²
+   swamps evaporation ~10⁻³ m.
+5. **Judge by metric, never by figure.** v0's headline R² of 0.99 was `eval_set`
+   pointed at training data — in-sample, and no metric was ever computed on the
+   held-out year. Scored properly on 2022, v0's soil/snow state is mean R²
+   **0.841**.
+6. **Compare like with like before concluding anything is wrong.** The MLP looked
+   far short of v1 until three fixes: the misalignment above, **excluding
+   glacier/coastal points** (22.3% of O96 land, ~3× the soil-temperature error),
+   and scoring a free 3-year rollout against the paper's *single-timestep* table.
+   Corrected, the prognostic state is at parity — see below.
+7. **Small silent bugs in your own tooling.** `land[::step][:npoints]` truncates
+   rather than spans, so the first global sample silently had nothing south of
+   30°S. Sampling is systematic, not stratified — a weakness given the rare
+   biomes this work cares about.
 
 ---
 
 ## v1 reproduction: full detail
 
-Full v1 recipe: O96, **11,538 land points, 1998–2019 training**, 2022 held out for
-validation and best-checkpoint selection, 6×512, R=4→R=8, Adam 5e-4→3e-7 cosine with
-1000-step warmup, batch 46,152. One A100, 5 h.
+Full v1 recipe: O96, **11,538 land points, 1998–2019 training**, 2022 held out,
+6×512, R=4→R=8, Adam 5e-4→3e-7 cosine with 1000-step warmup, batch 46,152. One
+A100, 5 h.
 
-**Metric and reference**, matching the paper's own Table B1 exactly: RMSE (and, added
-here, R² — the paper's table does not report it) of **single-timestep** predictions
-against **ecLand itself** (`ailand.evaluate.score`, `sklearn.metrics.r2_score`) — not
-against ERA5 or FLUXNET observations, and not a free rollout (that is the separate
-Table 5 protocol used further down). Glacier and coastal points excluded, as the paper
-does throughout. `H`/`LE` are the time-averaged flux over each 6-hourly step, in W m⁻².
-All numbers below, ours and R², are from `slurm/logs/ailand-repro.33370597.out`
-(held-out/test period, i.e. 2022).
+**Metric and reference**, matching the paper's Table B1: RMSE (plus R², absent
+from the paper's table) of **single-timestep** predictions against **ecLand
+itself** — not ERA5, not FLUXNET, and not a free rollout (the separate Table 5
+protocol below). Glacier/coastal excluded throughout; `H`/`LE` are the
+time-averaged flux per 6-hourly step, W m⁻². Source:
+`slurm/logs/ailand-repro.33370597.out`, held-out 2022.
 
-| | paper O96 (RMSE) | ours, 2 yr (RMSE) | **ours, 22 yr (RMSE)** | ratio | **ours R²** |
+| | paper RMSE | ours, 2 yr | **ours, 22 yr** | ratio | **ours R²** |
 |---|---|---|---|---|---|
 | `swvl1` | 0.01040 | 0.01050 | **0.010638** | 1.02× | 0.996 |
 | `swvl2` | 0.003115 | 0.003250 | **0.003180** | 1.02× | 1.000 |
@@ -100,55 +75,49 @@ All numbers below, ours and R², are from `slurm/logs/ailand-repro.33370597.out`
 | `H` | 11.57 W m⁻² | 17.62 | 17.24 | 1.49× | 0.960 |
 | `LE` | 9.68 W m⁻² | 15.44 | 14.95 | 1.54× | 0.963 |
 
-R² stays high (≥0.96) even where the RMSE ratio against the paper is worst (`2t`,
-`skt`, `H`, `LE`) — the paper's table has no equivalent column, so this is the one
-number in this section that has no "ratio vs paper" to report. It says the fit is
-still good in an absolute sense; the RMSE ratio is the more demanding comparison,
-because it is relative to the paper's own, much better-resourced, run.
+R² stays ≥0.96 even where the RMSE ratio is worst (`2t`, `skt`, `H`, `LE`); the
+paper's table has no equivalent column. The RMSE ratio, against the paper's own
+better-resourced run, is the more demanding comparison.
 
-**The prognostic state reproduces v1** — every one of the seven at parity or better,
-mean R² 0.989. The 22-year training period did what it was expected to do for snow
-(`snowc` 3.72× → 1.17×), confirming that two years simply cannot represent snow
-variability.
+**The prognostic state (first seven rows) reproduces v1** — all at parity or
+better, mean R² 0.989. 22 years of training fixed snow as expected (`snowc`
+3.72× → 1.17×), confirming two years cannot represent snow variability.
 
-**It did not close the diagnostic gap**, which barely moved (`2t` 1.61 → 1.49 K).
-Five hypotheses have now been tested and rejected:
+**It did not close the diagnostic gap** (`2t` 1.61 → 1.49 K). Five hypotheses
+tested and rejected:
 
 | Hypothesis | Test | Verdict |
 |---|---|---|
-| Too little training data | 2 yr → 22 yr | **No** — fixed snow (3.7× → 1.17×), not diagnostics |
+| Too little training data | 2 yr → 22 yr | **No** — fixed snow, not diagnostics |
 | Diagnostic head too small | 1 → 3 blocks, 3× flux weights | **No** — no change |
-| Missing albedo input | checked v1's Table 1 | **No** — v1 does not use albedo either; our input set already matches its 14 static + 7 dynamic + 3 temporal fields |
+| Missing albedo input | checked v1's Table 1 | **No** — v1 doesn't use it either; our inputs already match its 14 static + 7 dynamic + 3 temporal fields |
 | RMSE aggregation convention | pooled vs per-gridpoint | Partly — `LE` 1.54× → 1.38×, rest ~5% |
-| Too few distinct start times | 1,040 → 30,000, same budget | **No** — `2t` 1.4862 → 1.4836 K, i.e. nothing |
+| Too few distinct start times | 1,040 → 30,000, same budget | **No** — `2t` 1.4862 → 1.4836 K |
 
-What remains is the gradient budget: we are still ~5–10× short of the paper's, whose
-every update spans all land points. That is a resource difference, not a method one.
-With the prognostic state at parity and stable in free rollout, this is a good enough
-reproduction to build on.
+What remains is the gradient budget — ~5–10× short of the paper's, whose every
+update spans all land points: a resource gap, not a method one.
 
-Free autoregressive rollout through 2022, same points: mean R² 0.974, `stl1` 2.45 K,
-`swvl1` 0.0191, `2t` 1.55 K — so the model is stable, not just accurate one step out.
+Free autoregressive rollout through 2022, same points: mean R² 0.974, `stl1`
+2.45 K, `swvl1` 0.0191, `2t` 1.55 K — stable, not just accurate one step out.
 
 ### Adding runoff, evaporation and GPP is free
 
-The `v1+fluxes` run is identical to `v1` on v1's own variables (`stl1` 1.121 vs 1.117 K,
-`swvl1` 0.010642 vs 0.010638) while additionally predicting evaporation at R² **0.964**,
-GPP at **0.984**, and runoff at 0.335 / 0.435. The extra diagnostic outputs cost nothing.
+`v1+fluxes` matches `v1` on v1's own variables (`stl1` 1.121 vs 1.117 K, `swvl1`
+0.010642 vs 0.010638) while additionally predicting evaporation at R² **0.964**,
+GPP at **0.984**, and runoff at 0.335/0.435 — at no cost.
 
 ---
 
 ## Which state vector
 
-Presets in `ailand/config.py`, all trained identically — 1000 trees, 2020–21, scored on
-the 2022 rollout at point `x=5`:
+Presets in `ailand/config.py`, trained identically — 1000 trees, 2020–21, scored
+on the 2022 rollout at point `x=5`:
 
-* **`v0`** — v0's soil and snow state: `swvl1-3`, `stl1-3`, `snowc`.
-* **`v0+snow`** — adds the snow prognostics `sd`/`rsn` and the diagnostics `skt`/`aco2gpp`.
-* **`v1`** — the aiLand v1 state vector (Raoult et al. 2026, Table 1), which is the same
-  seven prognostic variables, plus v1's diagnostic outputs.
-* **`v0-asdistributed`** — the notebook exactly as shipped, with runoff carried in the
-  state. Kept only so the original remains runnable; see the note below.
+* **`v0`** — soil/snow state: `swvl1-3`, `stl1-3`, `snowc`.
+* **`v0+snow`** — adds `sd`/`rsn` and diagnostics `skt`/`aco2gpp`.
+* **`v1`** — the same seven prognostic variables plus v1's diagnostic outputs.
+* **`v0-asdistributed`** — the notebook as shipped, runoff in the state; kept
+  only so the original remains runnable.
 
 Held-out 2022 R²:
 
@@ -163,35 +132,26 @@ Held-out 2022 R²:
 | `snowc` | **0.713** | −1.490 |
 | mean | **0.841** | −1.197 |
 
-**v0's state vector was already the right one.** Its soil and snow emulation scores 0.84
-on a held-out year; the gains later in this repo come from the temporal forcings, target
-scaling and the move to an MLP, not from changing what is in the state.
+**v0's state vector was already right** — 0.84 mean R² held-out; later gains
+come from temporal forcings, target scaling and the MLP, not the state itself.
 
-**Adding the snow prognostics makes snow worse.** Carrying `sd` and `rsn` looks
-physically obligatory — `snowc` cannot close a snow budget without them — but they roll
-out poorly themselves and feed that error straight back into `snowc`, which collapses
-from 0.713 to −1.490. v1 makes the opposite choice: `snowc` is promoted to prognostic
-even though it is diagnostic in ecLand, and the snow mass variables are left out of the
-state entirely. Worth knowing before anyone else proposes the same thing.
+**Adding the snow prognostics makes snow worse** — `sd`/`rsn` roll out poorly and
+feed that error into `snowc` (0.713 → −1.490). v1 makes the opposite choice.
 
-**A note on runoff.** The notebook as distributed also listed `sro`/`ssro` among its
-targets, which puts a flux into the state vector and, because the state is also the
-input, feeds its noise back into soil moisture. That is a data-configuration slip rather
-than anything intrinsic to the v0 design, so the `v0` preset above states the design as
-intended. Runoff is a genuinely useful *output* — see below — just not a state.
+**A note on runoff.** The notebook as distributed listed `sro`/`ssro` among its
+targets — a flux in the state, which is also the input, feeding its own noise
+back into soil moisture. A data-configuration slip, not part of v0's design.
+Runoff is a useful *output* (below), just not a state.
 
 ---
 
 ## Temporal forcings and target scaling
 
-`--temporal` adds v1's temporal/astronomical inputs — `cos/sin_julian_day`,
-`cos/sin_local_time` (local solar time, so the diurnal cycle is in phase regardless
-of longitude) and `insolation` (top-of-atmosphere, from the Spencer solar-position
-fits). v0 had no notion of season or time of day at all: both entered only
-indirectly through the meteorological forcing.
+`--temporal` adds v1's temporal/astronomical inputs — julian-day and local-time
+sin/cos, plus TOA `insolation`. v0 had no notion of season or time of day at all.
 
-`--scale-targets` divides each prognostic increment by its own standard deviation
-before fitting — v1's tendency scaler. Held-out 2022 R², preset `v1`, 1000 trees:
+`--scale-targets` divides each increment by its own std before fitting — v1's
+tendency scaler. Held-out 2022 R², preset `v1`, 1000 trees:
 
 | variable | baseline | +temporal | +scaled | +both |
 |---|---|---|---|---|
@@ -205,56 +165,43 @@ before fitting — v1's tendency scaler. Held-out 2022 R², preset `v1`, 1000 tr
 | `skt` | 0.704 | 0.653 | **0.705** | 0.652 |
 | mean | 0.723 | 0.747 | 0.763 | 0.746 |
 
-Both help, and they compound on soil moisture: `swvl3` goes from 0.668 to **0.967**,
-which is the single largest gain of any change in this repo. That matches v1's claim
-that the temporal forcings specifically improve the soil column.
+Both help and compound on soil moisture (`swvl3` 0.668 → **0.967**, the largest
+gain in this repo), matching v1's claim that temporal forcings specifically
+improve the soil column. Two caveats:
 
-Two caveats worth keeping:
-
-* **Snow gets worse, and drags the mean down.** These 10 points sit at ~51.6 °N in
-  the Netherlands/Germany, where mean snow cover is 1.8% — snow is a rare, episodic
-  event here, so `snowc` R² is noisy and easily degraded by anything that sharpens
-  the fit elsewhere. Judge it on the paper's cold-biome results, not on these points.
-* **Scaling helps less than you would expect, for a structural reason.** XGBoost's
-  default `multi_strategy="one_output_per_tree"` fits each target with its own trees,
-  so per-target scaling is nearly a no-op — what gain there is comes from the
-  regularisation terms, which are not scale-invariant. Scaling only truly bites when
-  all targets share a structure, i.e. `--multi-strategy multi_output_tree` (which is
-  far worse here: mean R² −5.6) or a neural network. It is in the MLP that the
-  tendency scalers do their real work.
+* **Snow drags the mean down** — these 10 points sit at ~51.6°N, mean snow cover
+  1.8%, a rare signal easily degraded by anything sharpening the fit elsewhere.
+  Judge snow on the paper's cold-biome results, not these points.
+* **Scaling helps less than expected, structurally** — XGBoost's default
+  `one_output_per_tree` fits each target with its own trees, so per-target
+  scaling is nearly a no-op; it bites only when targets share structure (a
+  neural network, or `multi_output_tree`, far worse here at mean R² −5.6). The
+  tendency scalers do their real work in the MLP.
 
 ---
 
 ## Runoff as a diagnostic output
 
-aiLand v1 does not output runoff at all. Surface and subsurface runoff (Qs / Qsb; GRIB
-`sro` / `ssro`) are fluxes generated by the soil column, so they belong on the
-**diagnostic** branch — predicted from the current state at each step, bounded at zero,
-never fed back. Preset `v1+runoff` does exactly that, and `v1+fluxes` adds evaporation
-and GPP alongside.
+aiLand v1 does not output runoff. Surface/subsurface runoff (`sro`/`ssro`) are
+soil-column fluxes, so they belong on the **diagnostic** branch — predicted each
+step, bounded at zero, never fed back. `v1+runoff` does this; `v1+fluxes` adds
+evaporation and GPP.
 
-It works, and it is free: `sro` reaches R² +0.234 and `ssro` +0.229, while the
-prognostic scores stay identical to the `v1` preset. Skill is modest in absolute terms —
-runoff is intermittent and spiky — but it is real, and it is an output the published
-emulator does not provide.
-
-For completeness, the same variables carried as *state* instead score `sro` −14.4, and
-drag `swvl2` to −0.545 and `swvl3` to −1.235 with them: a flux in the state vector is
-also an input, so its noise propagates into the soil column. That is the reason for the
-diagnostic branch, not a criticism of any particular configuration.
+It's free: `sro` reaches R² +0.234, `ssro` +0.229, prognostic scores unchanged.
+Carried as *state* instead, `sro` scores −14.4 and drags `swvl2`/`swvl3` to
+−0.545/−1.235 — a flux in the state is also an input, so its noise propagates
+into the soil column. That's the reason for the diagnostic branch.
 
 ---
 
 ## The MLP: ablation against XGBoost
 
-`ailand/mlp.py` + `ailand/train_mlp.py` implement the v1 architecture: a shared
-prognostic backbone of Linear → LayerNorm → ReLU blocks projecting to increments,
-plus a diagnostic branch, residual updates and bounds as post-processing. Training
-follows v1's strategy — smooth L1 (Huber, β=1) accumulated over the rollout and
-scaled by 1/R, increments normalised by tendency scalers, Adam with cosine decay and
-linear warmup, gradient clipping at norm 5.0, and two phases of increasing horizon
-(R=4 → R=8). Scaled down: 4 × 256 (287k params) against v1's 6 × 512 (1.3M), because
-this trains on 10 grid points rather than 171,039.
+`ailand/mlp.py` + `train_mlp.py` implement v1's architecture: shared prognostic
+backbone (Linear → LayerNorm → ReLU) to increments, a diagnostic branch,
+residual updates, bounds as post-processing. Training follows v1: smooth L1
+over the rollout scaled by 1/R, tendency-scaled increments, Adam cosine+warmup,
+grad clip 5.0, two phases (R=4 → R=8). Scaled to 4×256 (287k params) vs v1's
+6×512 (1.3M), since this trains on 10 points not 171,039.
 
 Held-out 2022, preset `v1+runoff --temporal`, same data for both:
 
@@ -272,24 +219,19 @@ Held-out 2022, preset `v1+runoff --temporal`, same data for both:
 | `ssro` | **0.242** | 0.160 |
 | `aco2gpp` | −0.072 | −0.074 |
 
-The MLP wins on every prognostic variable, and the largest gain is `snowc`
-(0.416 → 0.860) — the variable the rollout loss should help most, since snow errors
-are exactly the kind that compound. Held-out `stl1` RMSE is 0.857 K.
-
-This is also where the two things XGBoost structurally cannot do become available:
-the model is **differentiable** end to end (v1's stated reason for choosing an MLP —
-gradient-based parameter estimation and data assimilation), and `mlp.rollout_batch`
-backpropagates through the autoregressive update, which is what makes the multi-step
-loss possible in the first place.
+The MLP wins on every prognostic variable, largest gain `snowc` (0.416 → 0.860)
+— exactly the compounding-error case the rollout loss should help. Held-out
+`stl1` RMSE is 0.857 K. It's also **differentiable** end to end (v1's stated
+reason for choosing an MLP), and `mlp.rollout_batch` backpropagates through the
+autoregressive update — what makes the multi-step loss possible at all.
 
 ---
 
 ## Full O96 results (free rollout)
 
-Full O96 land set — **11,538 land points**, 2020–2021 training, held-out 2022, scored
-as a continuous autoregressive rollout pooled over 500 points. aiLand v1 network size
-(6 × 512, 1.64M params), one NVIDIA A100, **26 minutes** end to end
-(`slurm/train_gpu.sh`, job 33311304).
+**11,538 land points**, 2020–2021 training, held-out 2022, continuous
+autoregressive rollout pooled over 500 points. v1 network size (6×512, 1.64M
+params), one A100, **26 minutes** end to end (`slurm/train_gpu.sh`, job 33311304).
 
 | | RMSE | R² | v1 (paper) |
 |---|---|---|---|
@@ -309,43 +251,32 @@ as a continuous autoregressive rollout pooled over 500 points. aiLand v1 network
 | `sro` / `ssro` | — | 0.388 / 0.384 | not output by v1 |
 | `aco2gpp` | — | −0.131 | not output by v1 |
 
-**The prognostic state is close to v1.** Soil temperature and moisture and snow cover
-all sit at R² 0.97–0.99, with `stl1` RMSE within a factor of two of v1's — reasonable
-given O96 (~125 km) against v1's N320 (~31 km), 68 epochs against 88, and 3M of the
-33.7M available rollout windows.
+**Prognostic state close to v1** — R² 0.97–0.99, `stl1` RMSE within a factor of
+two, reasonable given O96 vs v1's N320, fewer epochs, and 3M of 33.7M available
+rollout windows.
 
-**The diagnostic branch is not.** `2t` at 4.91 K against v1's 0.61–0.69 K, `skt` at
-9.39 K against 1.06 K, and the turbulent fluxes at negative R² — worse than predicting
-their own climatology. This is a real gap, not a scaling artefact, and it is the most
-useful thing this run tells us. Likely causes, in order of suspicion: a single-block
-diagnostic head with no per-variable loss weighting, so 9 diagnostics of very different
-difficulty share one undifferentiated term; global rather than per-point standardisation
-of highly spatially variable fluxes; and simply far less training than v1.
+**Diagnostic branch is not.** `2t` 4.91 K vs 0.61–0.69 K, `skt` 9.39 K vs 1.06 K,
+fluxes at negative R² — worse than climatology. Likely causes: a single-block
+diagnostic head with no per-variable loss weighting; global rather than
+per-point standardisation of spatially variable fluxes; simply less training
+than v1. Two consistency checks did pass: `corr(slhf, e) = 0.9992`, and `e`/`slhf`
+R² within 0.002 of each other.
 
-Two internal consistency checks that did pass: `corr(slhf, e) = 0.9992` — the same
-quantity in energy and water units, as it must be — and `e` and `slhf` scoring within
-0.002 of each other in R².
-
-It is worth noting that LE and H are exactly the two variables aiLand v1 fine-tunes on
-FLUXNET, and the ones its abstract reports improving by 30% and 20%. Our being weakest
-precisely there is consistent with them being the hard part, and is the direct argument
-for `docs/STRATEGY.md`.
+LE and H are exactly the two variables v1 fine-tunes on FLUXNET (30%/20%
+reported gains) — our being weakest there motivates `docs/STRATEGY.md`.
 
 ---
 
 ## FLUXNET-Shuttle fine-tuning: first results
 
-**"aiLand-base" here is this repo's own reproduction** (the O96 `v1+fluxes` MLP
-checkpoint above, `models/repro_v1_fluxes`, passed as `--base` in `slurm/finetune.sh`
-— its default), **not the paper's published `aiLand-base` checkpoint** from
-[Zenodo](https://doi.org/10.5281/zenodo.20764680). The two share a name because ours
-is meant to reproduce that checkpoint, and by the Table B1 numbers above it does — but
-no weights from the paper are loaded anywhere in this repo.
+**"aiLand-base" here is this repo's own reproduction** (`models/repro_v1_fluxes`
+above, the default `--base` in `slurm/finetune.sh`) — **not** the paper's
+published checkpoint from [Zenodo](https://doi.org/10.5281/zenodo.20764680). No
+weights from the paper are loaded anywhere in this repo.
 
-Fine-tuned on the Shuttle pool at O96 — 288 training sites, **74 held-out
-sites**, scored against the towers (FLUXNET-Shuttle observations, not ecLand) in
-tower units: RMSE, bias and Pearson r per variable, 6-hourly
-(`ailand.finetune.evaluate_sites`). Strategies S1 and S5 are v1's; S6 is new.
+Fine-tuned on the Shuttle pool at O96 — 288 training, **74 held-out** sites,
+scored against the towers in tower units: RMSE, bias, Pearson r, 6-hourly. S1/S5
+are v1's; S6 is new.
 
 | | `LE` RMSE | `LE` r | `H` RMSE | `H` r | `swvl1` | `stl1` | `stl2` | `stl3` | EB residual |
 |---|---|---|---|---|---|---|---|---|---|
@@ -354,40 +285,31 @@ tower units: RMSE, bias and Pearson r per variable, 6-hourly
 | S5 (full LR) | 56.24 | 0.745 | 58.81 | 0.817 | 0.0745 | 3.465 | 2.704 | 2.241 | 3.79 |
 | **S6 (constrained)** | 56.24 | 0.743 | 58.27 | 0.818 | **0.0717** | **3.068** | **2.383** | **2.005** | 3.24 |
 
-Fluxes in W m⁻², soil moisture in m³ m⁻³, soil temperature in K. `r` is the Pearson
-correlation between prediction and tower observation; source: `.rescore.log`.
+Fluxes W m⁻², soil moisture m³ m⁻³, soil temperature K. Source: `.rescore.log`.
 
-**Every strategy improves the fluxes** by 9–10% (`LE` 61.98 → 56.02, `H` 63.33 → 57.65),
-and the energy-balance residual falls from 7.68 to 1.3–3.2 W m⁻². v1 reports larger flux
-gains (30% for LE, 20% for H) and a comparable closure improvement (13.4 → <3 W m⁻²);
-ours are smaller, which is expected when a 125 km cell is being compared against a point
-tower and the fine-tuning is far shorter.
+**Every strategy improves the fluxes** 9–10%, EB residual 7.68 → 1.3–3.2 W m⁻².
+v1 reports larger gains (30%/20%, closure 13.4 → <3 W m⁻²); ours are smaller, as
+expected comparing a 125 km cell against a point tower.
 
-**Only S6 improves the prognostic state**, and it does so across the board:
+**Only S6 improves the prognostic state**: `stl1` 3.423 → **3.068 K** (−10.4%),
+`stl2`/`stl3` similar; `swvl1` 0.0746 → **0.0717** (−4.0%, r 0.844 → 0.854). S1
+can't move it (backbone frozen); S5 unfreezes everything but has no soil term,
+so it drifts and slightly *degrades* `stl1`. **This is what v1 could not do**:
+soil observations on the prognostic head train the backbone on evidence, while
+the anchor keeps fluxes from regressing.
 
-* `stl1` 3.423 → **3.068 K** (−10.4%), `stl2` −11.5%, `stl3` −10.5%
-* `swvl1` 0.0746 → **0.0717 m³ m⁻³** (−4.0%), with correlation 0.844 → 0.854
-
-S1 cannot move it — its backbone is frozen by construction. S5 unfreezes everything but
-has no soil term in the loss, so it drifts by a fraction of a percent and slightly
-*degrades* `stl1`. **This is the thing v1 could not do**: with soil observations on the
-prognostic head the backbone is trained on evidence, and the anchor term against the
-pretrained model keeps the fluxes from regressing while it happens.
-
-Not everything improved. Bowen ratio MAE is essentially flat (6.03 → 6.03 for S6, and
-S5 makes it worse at 7.00) against the 42% reduction v1 reports. Getting both flux
-magnitudes right without fixing their partition is a real gap, and the most likely
-reason is that our two flux terms are weighted equally and independently — nothing in
-the loss constrains their ratio.
+Bowen ratio MAE is essentially flat (6.03 → 6.03 for S6) against v1's 42%
+reduction — both flux magnitudes improve without their partition fixed, likely
+because the two flux terms are weighted independently, with nothing
+constraining their ratio.
 
 ---
 
 ## N320: what it changed, and what it did not
 
-Moving to N320 (~31 km) from O96 (~125 km) was worth it for the observational work and
-not for the emulator.
+Worth it for the observational work, not for the emulator.
 
-**For fine-tuning it helped a lot**, because the limiting factor there was collocation:
+**Helped fine-tuning a lot** — collocation was the limiting factor:
 
 | | O96 | N320 |
 |---|---|---|
@@ -396,11 +318,10 @@ not for the emulator.
 | median site-to-cell distance | 46.2 km | **12.7 km** |
 | base model `LE` RMSE at towers | 61.98 | **51.29** W m⁻² |
 
-The last row is the same weights on a finer grid — a 17% error reduction bought purely
-by comparing a tower against a 31 km cell instead of a 125 km one.
+Same weights, finer grid — a 17% error reduction from comparing a tower against
+a 31 km cell instead of a 125 km one.
 
-**For the emulator it did nothing.** Training a native N320 base (Table B1 protocol,
-single-timestep, glacier and coastal excluded):
+**Did nothing for the emulator.** Native N320 base (Table B1 protocol):
 
 | | ours, O96 base | ours, N320 base | paper N320 |
 |---|---|---|---|
@@ -411,24 +332,20 @@ single-timestep, glacier and coastal excluded):
 | `skt` | 1.866 | 1.980 | 1.038 |
 | `LE` | 14.95 | 14.76 | 9.18 |
 
-Prognostics stay at parity (1.04–1.10×). Diagnostics are unchanged or marginally worse,
-while the paper's *improve* with resolution — its `2t` goes 0.876 at O96 to 0.616 at
-N320 — so the ratio widens from 1.70× to 2.52×. **v1 extracts something from the finer
-grid that we do not.** The paper attributes its own gain to "richer spatial
-heterogeneity captured at higher resolution"; whatever that is, our diagnostic branch is
-not picking it up. That makes resolution the sixth rejected hypothesis for the
-diagnostic gap.
-
-One confound worth stating: the N320 base trained on 2010–2022 (13 years) against the
-O96 base's 1998–2019 (22 years), because that is what the extraction covered. Since
-22 years did not help the diagnostics either, this is unlikely to be the explanation.
+Prognostics stay at parity (1.04–1.10×); diagnostics unchanged or marginally
+worse, while the paper's *improve* with resolution (`2t` 0.876 → 0.616), widening
+the ratio 1.70× → 2.52×. v1 extracts something from the finer grid we don't —
+attributed by the paper to "richer spatial heterogeneity" — making resolution
+the sixth rejected hypothesis for the diagnostic gap. (Confound: the N320 base
+trained on 2010–2022 vs O96's 1998–2019 — unlikely to matter, since 22 years
+didn't help diagnostics either.)
 
 ---
 
 ## Fine-tuning against the towers, scored as v1 scores
 
-Daily means at held-out sites over 2020–2022, against v1's Table 6 (daily means, 17
-held-out sites, 2020–2023):
+Daily means at held-out sites, 2020–2022, against v1's Table 6 (17 held-out
+sites, 2020–2023):
 
 | | LE RMSE | LE r | H RMSE | H r |
 |---|---|---|---|---|
@@ -438,19 +355,16 @@ held-out sites, 2020–2023):
 | ours S1 | 32.4 | 0.731 | 35.8 | **0.758** |
 | ours S6 | 32.1 | 0.728 | 37.3 | 0.745 |
 
-LE RMSE is 43% above v1's and H 61% above, but the correlations are close — and on `H`
-ours is *better* than v1 both before and after fine-tuning. In improvement terms we
-reach 11–13% against v1's 30% and 18%, so roughly half.
-
-Note the validation sets differ: v1 holds out 17 FluxDataKit sites, we hold out ~106
-from the Shuttle pool, which deliberately includes biomes PLUMBER2 under-represents and
-is therefore a harder test.
+LE RMSE is 43% above v1's, H 61% above, but correlations are close — on `H`
+ours is *better* than v1 both before and after fine-tuning. In improvement terms
+we reach 11–13% against v1's 30%/18%, roughly half. Validation sets differ: v1
+holds out 17 FluxDataKit sites, we hold out ~106 Shuttle-pool sites including
+biomes PLUMBER2 under-represents — a harder test.
 
 ### The partition term
 
-6-hourly scoring against the towers, N320, so the Bowen sample is large enough to
-mean something (source: `slurm/logs/ailand-ft.34054555.out` for base/S1/S6,
-`slurm/logs/ailand-ft.34061535.out` for the corrected S7):
+6-hourly scoring against the towers, N320 (source: `ailand-ft.34054555.out` for
+base/S1/S6, `ailand-ft.34061535.out` for the corrected S7):
 
 | | LE RMSE | LE r | H RMSE | H r | `swvl1` | Bowen MAE | EB residual |
 |---|---|---|---|---|---|---|---|
@@ -459,15 +373,15 @@ mean something (source: `slurm/logs/ailand-ft.34054555.out` for base/S1/S6,
 | S6 (constrained) | 44.32 | 0.793 | 56.34 | 0.804 | 0.0862 | 6.818 | 3.935 |
 | **S7 (+ partition)** | **44.28** | **0.793** | 56.09 | 0.805 | **0.0861** | **6.728** | **−0.0001** |
 
-S7 drives energy-balance closure to essentially **zero** (v1 reports 13.4 → <3 W m⁻²),
-and is best on LE and soil moisture. But Bowen ratio MAE improves only 3.8% against
-v1's 42%, which is not what constraining evaporative fraction should do — EF *is* the
-ratio. The likely explanation is that Bowen MAE is dominated by heavy-tailed outliers
-the ±20 clip does not tame, so the metric is not measuring what the term fixes.
+S7 drives EB closure to essentially **zero** (v1: 13.4 → <3 W m⁻²) and is best
+on LE and soil moisture. But Bowen MAE improves only 3.8% against v1's 42% —
+not what constraining evaporative fraction should do, since EF *is* the ratio;
+likely because Bowen MAE is dominated by heavy-tailed outliers the ±20 clip
+doesn't tame, so the metric isn't measuring what the term fixes.
 
-Worth noting S1 *degrades* the Bowen ratio (6.996 → 8.446) while improving both flux
-magnitudes: fitting LE and H independently can get both closer and their partition
-further away. That is the pathology S7 exists to prevent, and it does prevent it.
+S1 alone *degrades* the Bowen ratio (6.996 → 8.446) while improving both flux
+magnitudes — independent fitting can get both closer while the partition gets
+worse. That's the pathology S7 exists to prevent, and does.
 
 ---
 
@@ -475,25 +389,24 @@ further away. That is the pathology S7 exists to prevent, and it does prevent it
 
 | | v0 (this notebook) | v1 (Raoult et al., 2026) |
 |---|---|---|
-| Architecture | XGBoost, gradient-boosted trees | MLP: 6 hidden layers × 512, LayerNorm + ReLU, ~1.3M params; shared prognostic backbone + diagnostic branch |
-| Differentiable | no | **yes** — the stated reason for choosing an MLP (data assimilation, parameter estimation) |
+| Architecture | XGBoost, gradient-boosted trees | MLP: 6×512, LayerNorm + ReLU, ~1.3M params; shared prognostic backbone + diagnostic branch |
+| Differentiable | no | **yes** — the stated reason for choosing an MLP |
 | Training data | 10 land points, 2020–21, mock store | global N320, **171,039 land points**, 1998–2019, 6-hourly; 2022 held out |
 | Data pipeline | hand-rolled `xarray` stacking | `anemoi-datasets`, YAML recipes, Zarr chunked in time |
 | Prognostic targets | 9, incl. runoff | `stl1-3`, `swvl1-3`, `snowc` (increments) |
 | Diagnostic targets | none | `2t`, `2d`, `skt`, `LE`, `H` (absolute) |
 | Temporal forcing | none | time of day, day of year, TOA insolation |
-| Normalisation | none | feature-wise stats; increments divided by **tendency scalers** (std of 6-h increments) |
-| Loss | RMSE (typo'd objective) | smooth L1 (Huber, β=1), accumulated over rollout, scaled by 1/R |
-| Rollout training | none (single step) | Phase 1: R=4 (24 h), 80 epochs / 160k steps; Phase 2: R=8 (48 h), 8 epochs |
+| Normalisation | none | feature-wise stats; increments divided by **tendency scalers** |
+| Loss | RMSE (typo'd objective) | smooth L1 (Huber, β=1), over rollout, scaled by 1/R |
+| Rollout training | none (single step) | Phase 1: R=4 (24 h), 80 epochs; Phase 2: R=8 (48 h), 8 epochs |
 | Optimiser | – | Adam, peak LR 5e−4 → 3e−7 cosine, 1000-step warmup, grad clip 5.0 |
 | Hardware | 1 CPU | 4 GPUs, DDP, mixed precision |
 | Bounds | `clip(x, 0, None)` | variable-specific bounds as post-processing |
-| Observations | none | **fine-tuning on FLUXNET** (FluxDataKit): 199 training / 42 validation sites, NaN-masked loss, 5 strategies S1–S5 |
-| Evaluation | 1 point, by eye | RMSE/MAE/ACC vs climatology; 138 × 90-day integrations; 1-yr and 4-yr continuous rollouts; 6 k-means biomes; O96 ↔ N320 transfer |
+| Observations | none | **fine-tuning on FLUXNET** (FluxDataKit): 199/42 sites, NaN-masked loss, 5 strategies S1–S5 |
+| Evaluation | 1 point, by eye | RMSE/MAE/ACC vs climatology; 138×90-day integrations; 1-yr/4-yr rollouts; 6 k-means biomes; O96↔N320 transfer |
 
-v1 headline results: 90-day RMSE 1.19 K (`stl1`) and 0.014 m³ m⁻³ (`swvl1`); stable over
-4-year autoregressive integration; fine-tuning cuts LE RMSE by 30%, H by 20%, per-site
-Bowen ratio error by 42%, and energy-balance closure residual from 13.4 to <3 W m⁻².
+v1 headline: 90-day RMSE 1.19 K (`stl1`), 0.014 m³ m⁻³ (`swvl1`), stable over 4
+years; fine-tuning cuts LE 30%, H 20%, Bowen error 42%, EB residual 13.4 → <3.
 
 ---
 
@@ -501,47 +414,38 @@ Bowen ratio error by 42%, and energy-balance closure residual from 13.4 to <3 W 
 
 | Change | Why |
 |---|---|
-| Paths resolved from the repo root | `../tests/mock_data/...` did not exist from this directory |
-| `objevtive=` → `objective="reg:squarederror"` | The v0 kwarg was a typo, silently accepted by XGBoost and ignored, so the intended MAE objective never applied |
+| Paths resolved from the repo root | `../tests/mock_data/...` didn't exist from this directory |
+| `objevtive=` → `objective="reg:squarederror"` | v0's kwarg was a typo, silently accepted and ignored — the intended MAE objective never applied |
 | `random_state=SEED` | `subsample=0.6` made v0 non-reproducible |
-| Prognostic state indexed by name | v0 assumed the targets were the last N features *in order*; a positional assumption that breaks silently on any edit |
-| Variable-specific physical bounds | v0 applied `np.clip(x, 0, None)` to everything, which is meaningless for soil temperature in K and misses the upper bound on snow cover |
-| Diagnostic branch (`skt`, `aco2gpp`) | Predicted as absolute values and *not* fed back, mirroring v1's diagnostic head. Feeding them back from truth would leak into the rollout |
-| Scoring cell on the held-out year | v0 judged the rollout by eye from one figure; no metric was ever computed on 2022 |
-| Split into `train` / `infer` / `evaluate` scripts | A notebook cannot be run per-stage, cached, or tested |
-| Presets for the v0 / v0+snow / v1 state vectors | Makes the state-vector choice measurable rather than assumed |
+| Prognostic state indexed by name | v0 assumed targets were the last N features *in order* — breaks silently on any edit |
+| Variable-specific physical bounds | v0 clipped everything to `[0, None]`, meaningless for soil temperature in K and missing snow's upper bound |
+| Diagnostic branch (`skt`, `aco2gpp`) | Predicted as absolutes, *not* fed back, mirroring v1's diagnostic head |
+| Scoring cell on the held-out year | v0 judged the rollout by eye; no metric was ever computed on 2022 |
+| Split into `train`/`infer`/`evaluate` | A notebook can't be run per-stage, cached, or tested |
+| Presets for v0/v0+snow/v1 state vectors | Makes the state-vector choice measurable rather than assumed |
 | `tests/` for the ML path | Upstream tested only the GRIB→Zarr ingest |
 
-**Kernel caveat.** The notebook's recorded kernel is `ec_land_db`, but
-`~/.local/share/jupyter/kernels/ec_land_db/kernel.json` points at the *system*
-interpreter `/usr/local/apps/python3/3.12.9-01/bin/python3.12` — there is no
-virtualenv behind it, despite the upstream README's install instructions.
-`requirements.txt` here is pinned from that interpreter, because it is the one
-that actually produced the stored outputs. The upstream `environment.yml`
-(python 3.8.16, numpy 1.24.2, xarray 2023.1.0, zarr 2.13.6, py-xgboost 1.7.6)
-does not describe any environment in use here and almost certainly no longer
-solves; it is kept in `docs/upstream/` for reference only.
+**Kernel caveat.** The notebook's recorded kernel `ec_land_db` points at the
+*system* interpreter, not a virtualenv, despite the upstream README — so
+`requirements.txt` here is pinned from that interpreter instead, the one that
+actually produced the stored outputs. The upstream `environment.yml` almost
+certainly no longer solves; kept in `docs/upstream/` for reference only.
 
 ---
 
 ## Suggested next steps
 
-1. **Hold out grid points, not just time.** Point `x=5` is in the training set; only
-   2022 is genuinely independent. This is the weakest part of the evaluation.
-2. **Move to the real data.** 10 points at one latitude cannot show cross-biome or
-   cross-resolution behaviour, and make `snowc` scores nearly meaningless. The O96
-   store on `/lus` (114 GB) is the tractable next step — see `data/EXTERNAL.md`.
-3. **Add the missing v1 diagnostics.** The mock store has no `2t`, `2d`, `slhf` or
-   `sshf`, so the diagnostic branch is running on `skt` and `aco2gpp` alone. The
-   anemoi stores have all five.
-4. **Fix `aco2gpp`.** The one variable with negative skill under every configuration
-   and both model types. GPP is not a memoryless function of the current state and
-   instantaneous forcing; it needs phenology or a memory term.
-5. **Scale the MLP toward v1** (6 × 512, longer rollouts, GPU) once trained on more
-   than 10 points — `--device cuda` is already wired.
-6. **Exploit the differentiability.** Gradients through the emulator are the whole
-   point of v1's architecture choice: parameter sensitivity, then observation-
-   constrained parameter estimation.
-7. **Fine-tune on observations.** v1's second stage (FLUXNET via FluxDataKit, five
-   strategies S1–S5) is what corrects ecLand's own biases rather than just emulating
-   them, and needs the flux diagnostics from (3) first.
+1. **Hold out grid points, not just time** — only 2022 is genuinely independent;
+   the weakest part of the evaluation.
+2. **Move to the real data** — 10 points at one latitude can't show cross-biome
+   or cross-resolution behaviour; O96 on `/lus` is next (`data/EXTERNAL.md`).
+3. **Add the missing v1 diagnostics** — the mock store lacks `2t`, `2d`, `slhf`,
+   `sshf`; the anemoi stores have all five.
+4. **Fix `aco2gpp`** — negative skill everywhere; GPP isn't a memoryless function
+   of current state, it needs phenology or a memory term.
+5. **Scale the MLP toward v1** (6×512, longer rollouts, GPU) once trained on
+   more than 10 points — `--device cuda` is already wired.
+6. **Exploit the differentiability** — parameter sensitivity, then
+   observation-constrained parameter estimation.
+7. **Fine-tune on observations** — v1's FLUXNET stage corrects ecLand's own
+   biases rather than just emulating them; needs (3) first.
