@@ -1,0 +1,14 @@
+# v1_anemoi branch only. Separate venv from requirements.txt deliberately:
+# anemoi-training pulls in pytorch-lightning + hydra-core + its own numpy/zarr
+# pins, which are not guaranteed to coexist with the v0/v1 hand-rolled
+# pipeline's pinned versions in requirements.txt. See docs/ANEMOI.md.
+#
+#   python3 -m venv --system-site-packages .venv-anemoi
+#   source .venv-anemoi/bin/activate
+#   pip install -r requirements-anemoi.txt
+#   pip install -e .
+
+anemoi-training==0.17.0
+anemoi-models==0.19.0
+anemoi-graphs==0.9.7
+anemoi-datasets==0.5.43

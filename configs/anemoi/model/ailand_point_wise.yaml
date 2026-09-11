@@ -1,0 +1,112 @@
+# Point-wise MLP model sized towards v1's 6x512 (~1.3M params). Copied from
+# the shipped model/point_wise.yaml and resized/rebounded for aiLand -- see
+# docs/ANEMOI.md for what each block below maps to in the hand-rolled
+# ailand.mlp.AiLandMLP for comparison.
+#
+# TODO(Phase 1, open item): num_channels=512 / processor num_layers=6 is an
+# approximation of "6 hidden blocks of width 512" -- not yet checked against
+# an actual instantiated parameter count. Needs `torchinfo.summary` (already
+# a dependency) against this config once the land-masking question (see
+# data/ailand_o96.yaml) is resolved and the model can actually be built.
+num_channels: 512
+cpu_offload: False
+
+keep_batch_sharded: True
+
+model:
+  _target_: anemoi.models.models.AnemoiModelEncProcDec
+  hidden_nodes_name: "data"
+  latent_skip: True
+
+layer_kernels:
+  LayerNorm:
+    _target_: torch.nn.LayerNorm
+  Linear:
+    _target_: torch.nn.Linear
+  Activation:
+    _target_: torch.nn.ReLU  # v1: Linear -> LayerNorm -> ReLU blocks throughout
+  QueryNorm:
+    _target_: anemoi.models.layers.normalization.AutocastLayerNorm
+    bias: False
+  KeyNorm:
+    _target_: anemoi.models.layers.normalization.AutocastLayerNorm
+    bias: False
+
+processor:
+  _target_: anemoi.models.layers.processor.PointWiseMLPProcessor
+  num_layers: 6
+  num_chunks: 1
+  mlp_hidden_ratio: 1  # keep hidden width == num_channels (512), not 4x
+  cpu_offload: ${model.cpu_offload}
+  gradient_checkpointing: True
+  layer_kernels: ${model.layer_kernels}
+
+encoders:
+  "0":
+    source_datasets: ["data"]
+    dataset_fusing_strategy: "not_supported"
+    mapper:
+      _target_: anemoi.models.layers.mapper.PointWiseForwardMapper
+      trainable_size: ${model.edge_trainable_parameters.data2hidden}
+      cpu_offload: ${model.cpu_offload}
+      gradient_checkpointing: True
+      layer_kernels: ${model.layer_kernels}
+
+latent_aggregator:
+  _target_: anemoi.models.layers.aggregator.SumAggregator
+
+decoders:
+  "0":
+    target_datasets: ["data"]
+    target_node_features: ["encoded_data"]
+    mapper:
+      _target_: anemoi.models.layers.mapper.PointWiseBackwardMapper
+      trainable_size: ${model.edge_trainable_parameters.hidden2data}
+      initialise_data_extractor_zero: False
+      cpu_offload: ${model.cpu_offload}
+      gradient_checkpointing: True
+      layer_kernels: ${model.layer_kernels}
+
+residual:
+  # v1's residual formulation: increments predicted, added to the previous
+  # state (ailand.mlp.rollout_batch: `state = x[:, prog_idx] + prog_n * tend`).
+  datasets:
+    data:
+      _target_: anemoi.models.layers.residual.SkipConnection
+      step: -1
+
+output_mask:
+  datasets:
+    data:
+      _target_: anemoi.training.utils.masks.NoOutputMask
+
+node_trainable_parameters:
+  data: 0
+  hidden: 0
+
+edge_trainable_parameters:
+  data2hidden: 0
+  hidden2hidden: 0
+  hidden2data: 0
+
+attributes:
+  edges: []
+  nodes: []
+
+# v1's variable-specific physical bounds as post-processing (ailand.config's
+# O96_BOUNDS), applied in order.
+bounding:
+  datasets:
+    data:
+      - _target_: anemoi.models.layers.bounding.ReluBounding  # [0, inf)
+        variables:
+          - swvl1
+          - swvl2
+          - swvl3
+
+      - _target_: anemoi.models.layers.bounding.HardtanhBounding  # [0, 1]
+        variables:
+          - snowc
+        min_val: 0.0
+        max_val: 1.0
+      # stl1-3 deliberately unbounded, as in ailand.config.O96_BOUNDS.

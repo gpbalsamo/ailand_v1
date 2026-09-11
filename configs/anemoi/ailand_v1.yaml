@@ -1,0 +1,32 @@
+# aiLand v1 on anemoi-training: Phase 1 (R=4) pretraining, reproducing the
+# same Table B1 / Table 5 milestones as the hand-rolled ailand.train_mlp
+# pipeline (see docs/RESULTS.md), on a point-wise MLP built from
+# anemoi-models instead of ailand.mlp.AiLandMLP.
+#
+# Generated from `anemoi-training config generate` (point_wise.yaml is the
+# untouched upstream baseline this was forked from -- diff against it to see
+# exactly what's aiLand-specific). See docs/ANEMOI.md for the full mapping
+# and open items before running this for real.
+defaults:
+  - data: ailand_o96
+  - dataloader: native_grid
+  - diagnostics: ailand_evaluation
+  - system: example
+  - graph: point_wise
+  - model: ailand_point_wise
+  - task: ailand_forecaster
+  - training: ailand_pretrain
+  - override system/input: ailand_o96
+  - override system/output: ailand
+  - _self_
+
+# FALSE, deliberately: `anemoi-training config validate` (and the
+# equivalent BaseSchema(**cfg) check this flag gates at train time) rejects
+# num_channels/trainable_size on the PointWise mapper/processor schemas --
+# confirmed reproducible on the UNMODIFIED shipped point_wise.yaml too (ran
+# it through the same validator with dummy dataset/graph/output overrides),
+# so this is an upstream schema bug in the just-shipped PointWise* model
+# family (anemoi-models 0.19.0 / anemoi-training 0.17.0), not a mistake in
+# this config. See docs/ANEMOI.md. Everything else in this config passed the
+# same check cleanly before this point. Re-enable once fixed upstream.
+config_validation: False

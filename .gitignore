@@ -3,6 +3,8 @@ __pycache__/
 .ipynb_checkpoints/
 .venv/
 venv/
+.venv-anemoi/
+.pip-tmp/
 *.egg-info/
 
 # Trained models and generated figures are reproducible outputs

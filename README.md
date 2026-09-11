@@ -27,7 +27,8 @@ ML term in ecLand language, and attributes each recipe to the v1 paper, the wide
 literature, or a choice made here. [`docs/STRATEGY.md`](docs/STRATEGY.md) is the plan
 for going beyond v1 using observations. [`docs/RESULTS.md`](docs/RESULTS.md) is the
 full experiment log — every ablation, rejected hypothesis, and lesson learnt behind
-the headline numbers below.
+the headline numbers below. [`docs/ANEMOI.md`](docs/ANEMOI.md) (branch `v1_anemoi`)
+reimplements this pipeline on ECMWF's own anemoi-training stack.
 
 ### References
 

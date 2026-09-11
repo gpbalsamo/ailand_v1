@@ -1,0 +1,40 @@
+# Same as the shipped diagnostics/evaluation.yaml, except mlflow's
+# tracking_uri is given a concrete (unused) value -- mlflow.enabled is False
+# by default, but the schema requires tracking_uri regardless.
+defaults:
+  - plot: detailed
+  - callbacks: placeholder
+  - benchmark_profiler: detailed
+  - log: mlflow
+  - _self_
+
+callbacks: []
+
+debug:
+  anomaly_detection: False
+
+enable_checkpointing: True
+checkpoint:
+  every_n_minutes:
+    save_frequency: 30
+    num_models_saved: 3
+
+  every_n_epochs:
+    save_frequency: 1
+    num_models_saved: -1
+
+  every_n_train_steps:
+    save_frequency: null
+    num_models_saved: 0
+
+enable_progress_bar: True
+progress_bar:
+  _target_: pytorch_lightning.callbacks.TQDMProgressBar
+  refresh_rate: 1
+
+check_val_every_n_epoch: 1
+print_memory_summary: False
+
+log:
+  mlflow:
+    tracking_uri: "file:./models/anemoi_mlflow"

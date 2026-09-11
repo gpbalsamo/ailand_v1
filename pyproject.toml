@@ -19,5 +19,16 @@ dependencies = [
     "netCDF4",
 ]
 
+[project.optional-dependencies]
+# v1_anemoi branch: reimplements the aiLand pipeline on ECMWF's own
+# anemoi-training stack instead of the hand-rolled src/ailand/mlp.py.
+# See docs/ANEMOI.md.
+anemoi = [
+    "anemoi-training==0.17.0",
+    "anemoi-models==0.19.0",
+    "anemoi-graphs==0.9.7",
+    "anemoi-datasets==0.5.43",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]

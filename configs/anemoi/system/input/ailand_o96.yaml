@@ -1,0 +1,11 @@
+# Points anemoi-training straight at the real v1 training data on /lus --
+# verified reachable and readable from this venv via anemoi.datasets.open_dataset:
+# shape (39444, 76, 1, 40320), frequency 6h, 76 named variables matching
+# ailand.config's O96_STATIC/O96_MET/O96_TEMPORAL/O96_GEO/O96_PRESETS exactly.
+# No extraction step needed -- this is the anemoi-datasets store itself.
+dataset: /lus/h1aiws01/project/ai-ml/datasets/aifs-rd-an-oper-isc8-mars-o96-1998-2024-6h-v1-ecland-era5met.zarr
+graph: null
+loss_matrices_path: null
+truncation: null
+truncation_inv: null
+warm_start: null

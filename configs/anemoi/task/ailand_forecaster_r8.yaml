@@ -1,0 +1,14 @@
+# Phase 2 (R=8, 8 epochs) -- same as ailand_forecaster.yaml except the
+# rollout window, used via `+task=ailand_forecaster_r8` when resuming from
+# the Phase 1 checkpoint.
+_target_: anemoi.training.tasks.Forecaster
+multistep_input: 1
+multistep_output: 1
+timestep: "6h"
+
+rollout:
+  start: 8
+  epoch_increment: 0
+  maximum: 8
+
+validation_rollout: null

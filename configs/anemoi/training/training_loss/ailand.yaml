@@ -1,0 +1,22 @@
+# v1's loss: smooth L1 (Huber, beta=1) with the tendency scaler on prognostic
+# increments (ailand.finetune's masked_huber + Normaliser.tend, and
+# ailand.mlp.rollout_batch's residual formulation).
+#
+# `stdev_tendency` (training/scalers/global.yaml) rescales only variables in
+# `data_indices.model.output.prognostic` (anemoi.training.losses.scalers.
+# variable_tendency.BaseTendencyScaler.get_scaling_values) -- confirmed by
+# reading the source, not assumed -- so it is automatically a no-op on the
+# five diagnostic variables and needs no separate loss term for them; they
+# get plain mean-std normalisation from data/ailand_o96.yaml's
+# InputNormalizer instead, matching ailand.mlp.Normaliser's d_mean/d_std.
+#
+# No `node_weights` (equal weight per land point, matching
+# ailand.evaluate.score_pooled's plain pooling) and no `general_variable`
+# manual per-variable weights (v1 uses the tendency scaler alone, no extra
+# hand-tuned weights).
+datasets:
+  data:
+    _target_: anemoi.training.losses.HuberLoss
+    delta: 1.0
+    ignore_nans: True
+    scalers: ["stdev_tendency", "nan_mask_weights", "time_steps"]

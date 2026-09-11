@@ -1,0 +1,158 @@
+# aiLand v1's O96 state vector (Raoult et al. 2026, Table 1) on the real
+# anemoi-datasets store. Variable names verified live against the /lus store
+# (see system/input/ailand_o96.yaml) and against ailand.config's
+# O96_STATIC/O96_MET/O96_TEMPORAL/O96_GEO/O96_PRESETS["v1"] lists.
+#
+# `select` restricts the 76-variable store to exactly what v1 uses, so the
+# store's extra fields (stl4, swvl4, sd, rsn, aco2*, e, ro, 10u/10v, ...) never
+# become inputs or targets by accident.
+#
+# Anything not listed under `forcing` or `diagnostic` is prognostic by
+# anemoi's convention -- here, stl1-3/swvl1-3/snowc, matching config.py's
+# O96_PRESETS["v1"] exactly. `variable_tendency`/`stdev_tendency` scalers
+# (training/scalers/global.yaml) only ever touch these seven.
+format: zarr
+frequency: 6h
+
+datasets:
+  data:
+    dataset:
+      select:
+        # O96_STATIC
+        - cl
+        - dl
+        - cvh_0
+        - cvl_0
+        - tvh_0
+        - tvl_0
+        - hveg_cov_0
+        - lveg_cov_0
+        - hveg_rsmin_0
+        - lveg_rsmin_0
+        - hveg_z0m_0
+        - lveg_z0m_0
+        - theta_cap_0
+        - theta_pwp_0
+        - sdor_0
+        - isor_0
+        - anor_0
+        - slor_0
+        - z
+        - lsm_0
+        - c3_c4_0
+        # O96_MET
+        - t_ml_137
+        - q_ml_137
+        - u_ml_137
+        - v_ml_137
+        - ssrd
+        - strd
+        - tp
+        - sf
+        - sp
+        - lai_hv
+        - lai_lv
+        # O96_TEMPORAL (precomputed in the store, unlike the mock profile)
+        - cos_julian_day
+        - sin_julian_day
+        - cos_local_time
+        - sin_local_time
+        - insolation
+        # O96_GEO
+        - cos_latitude
+        - sin_latitude
+        - cos_longitude
+        - sin_longitude
+        # prognostic (v1 Table 1) -- not listed as forcing/diagnostic below
+        - stl1
+        - stl2
+        - stl3
+        - swvl1
+        - swvl2
+        - swvl3
+        - snowc
+        # diagnostic (v1 Table 1)
+        - 2t
+        - 2d
+        - skt
+        - slhf
+        - sshf
+
+    forcing:
+      - cl
+      - dl
+      - cvh_0
+      - cvl_0
+      - tvh_0
+      - tvl_0
+      - hveg_cov_0
+      - lveg_cov_0
+      - hveg_rsmin_0
+      - lveg_rsmin_0
+      - hveg_z0m_0
+      - lveg_z0m_0
+      - theta_cap_0
+      - theta_pwp_0
+      - sdor_0
+      - isor_0
+      - anor_0
+      - slor_0
+      - z
+      - lsm_0
+      - c3_c4_0
+      - t_ml_137
+      - q_ml_137
+      - u_ml_137
+      - v_ml_137
+      - ssrd
+      - strd
+      - tp
+      - sf
+      - sp
+      - lai_hv
+      - lai_lv
+      - cos_julian_day
+      - sin_julian_day
+      - cos_local_time
+      - sin_local_time
+      - insolation
+      - cos_latitude
+      - sin_latitude
+      - cos_longitude
+      - sin_longitude
+
+    diagnostic:
+      - 2t
+      - 2d
+      - skt
+      - slhf
+      - sshf
+
+    # TODO(Phase 1, open item): restrict to LAND points only. lsm_0 is in the
+    # forcing set so it's available to filter on, but the *mechanism* isn't
+    # settled -- two candidates found in anemoi-datasets/anemoi-graphs:
+    #   (a) anemoi.datasets' `Masked` dataset wrapper (usage/gridded/masked.py)
+    #       applied to `dataset:` above, keyed by an lsm_0>0.5 boolean mask;
+    #   (b) restrict the *graph* node builder (graph/point_wise.yaml's
+    #       AnemoiDatasetNodes) to land nodes instead, leaving the raw
+    #       dataloader reading the full 40320-point grid.
+    # Neither traced to a working recipe yet -- see docs/ANEMOI.md.
+    # Without this, training/scoring runs over all 40320 points (ocean
+    # included), not the 11,538-point O96 land set the hand-rolled pipeline
+    # and the paper's Table B1 use.
+
+    processors:
+      normalizer:
+        _target_: anemoi.models.preprocessing.normalizer.InputNormalizer
+        config:
+          default: "mean-std"
+          none:
+            - cos_julian_day
+            - sin_julian_day
+            - cos_local_time
+            - sin_local_time
+            - cos_latitude
+            - sin_latitude
+            - cos_longitude
+            - sin_longitude
+            - lsm_0
