@@ -83,14 +83,30 @@ max_steps: 10000000
 submodules_to_freeze: []
 
 # v1: Adam peak LR 5e-4 -> 3e-7 cosine, 1000-step warmup. The shipped cosine
-# scheduler's lr_min (3e-7) and warmup_t (1000) are ALREADY these values by
-# default (training/optimization/lr_scheduler/cosine_scheduler.yaml) -- only
-# the peak `lr` (default 0.625e-4) needs raising to 5e-4. Switched to
-# epoch-based scheduling (t_in_epochs) since this run has a fixed max_epochs
-# rather than a precomputed max_steps; warmup_t=2 epochs is an approximation
-# of "1000 steps" not yet checked against this dataset's actual steps/epoch.
+# scheduler's lr_min (3e-7) is ALREADY this value by default
+# (training/optimization/lr_scheduler/cosine_scheduler.yaml) -- only the
+# peak `lr` (default 0.625e-4) needs raising to 5e-4.
+#
+# CONFIRMED BUG, caught after ~4 GPU-hours on job 35721973: `t_in_epochs:
+# true` with `t_initial: 80` means "80 units, each unit an epoch" -- but
+# training/optimization/default.yaml's `pl_lr_scheduler.interval: step`
+# (unchanged, inherited) makes Lightning call `scheduler.step()` on every
+# training STEP, passing the cumulative step count. timm's CosineLRScheduler
+# takes whatever integer it's given as the literal unit count against
+# t_initial, with no unit conversion -- confirmed directly:
+#   sched.step(80) -> lr == lr_min already (3e-7)
+# So by ~80 steps into epoch 0 (out of many thousands of total steps for a
+# dataset this size), the LR had already collapsed to 3e-7 and stayed there
+# for the entire rest of the run -- 38 epochs of an almost dead-flat loss
+# (train_multi_dataset_loss_epoch pinned at 1.66e5 for the whole log) is
+# exactly what that produces. Fixed by making `pl_lr_scheduler.interval`
+# match `t_in_epochs: true`: `epoch`, not the default `step`. Lightning then
+# calls `.step()` once per epoch with the epoch index, which is what
+# `t_in_epochs` actually assumes.
 optimization:
   lr: 5.0e-4
+  pl_lr_scheduler:
+    interval: epoch
   lr_scheduler:
     t_in_epochs: true
     t_initial: ${training.max_epochs}
