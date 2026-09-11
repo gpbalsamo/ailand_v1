@@ -1,0 +1,23 @@
+# Same as the shipped training/scalers/global.yaml, minus `general_variable`
+# (v1 has no hand-tuned per-variable weights beyond the tendency scaler) and
+# `pressure_level` (no atmospheric pressure levels in a land-surface state --
+# and, found the hard way, `create_scalers` builds every scaler declared
+# here eagerly regardless of whether any loss actually requests it, so
+# `pressure_level` crashed with `KeyError: 'pl'` even though
+# training/training_loss/ailand.yaml never references it -- our
+# `variable_groups` has no "pl" group to look up).
+datasets:
+  data:
+    nan_mask_weights:
+      _target_: anemoi.training.losses.scalers.NaNMaskScaler
+
+    stdev_tendency:
+      _target_: anemoi.training.losses.scalers.StdevTendencyScaler
+
+    node_weights:
+      _target_: anemoi.training.losses.scalers.GraphNodeAttributeScaler
+      nodes_attribute_name: area_weight
+      norm: unit-sum
+
+    time_steps:
+      _target_: anemoi.training.losses.scalers.UniformTimeStepScaler

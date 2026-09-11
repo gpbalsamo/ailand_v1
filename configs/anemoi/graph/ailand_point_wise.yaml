@@ -1,0 +1,34 @@
+# Same as the shipped graph/point_wise.yaml, plus land-point masking --
+# resolves docs/ANEMOI.md's open item (1).
+#
+# Mechanism: no edges exist in a point-wise graph, so
+# `RemoveUnconnectedNodes` would otherwise drop every node as
+# "unconnected". Its `ignore` attribute inverts that: nodes where `ignore`
+# is True are kept regardless of connectivity. Setting `ignore: land_mask`
+# with `land_mask` computed as `lsm_0 > 0.5`
+# (ailand.anemoi_ext.ThresholdAnemoiDatasetVariable, matching
+# ailand.extract's --lsm-threshold default) keeps exactly the O96 land set
+# and drops everything else -- verified below to produce 11,538 nodes.
+overwrite: True
+
+nodes:
+  data:
+    node_builder:
+      _target_: anemoi.graphs.nodes.AnemoiDatasetNodes
+      dataset: ${dataloader.training.datasets.data.dataset_config}
+    attributes:
+      area_weight:
+        _target_: anemoi.graphs.nodes.attributes.SphericalAreaWeights
+        norm: unit-max
+        fill_value: 0
+      land_mask:
+        _target_: ailand.anemoi_ext.ThresholdAnemoiDatasetVariable
+        variable: lsm_0
+        threshold: 0.5
+
+edges: []
+
+post_processors:
+  - _target_: anemoi.graphs.processors.post_process.RemoveUnconnectedNodes
+    nodes_name: data
+    ignore: land_mask

@@ -1,0 +1,20 @@
+# Disables anemoi-training's built-in plotting callbacks. Their `parameters`
+# lists (settings_base.yaml, and two BatchOutputPlot blocks in detailed.yaml)
+# hardcode atmospheric variable names (z_500, t_850, 10u, 10v, tp, cp, ...)
+# none of which exist in aiLand's land-surface state -- confirmed fatal in a
+# CPU smoke test (`KeyError: 'z_500'` from BatchOutputPlot's
+# extract_spatial_inputs, uncaught, exit code 1, right after the validation
+# sanity check). Not a training blocker either way: this repo already has
+# its own plotting in ailand.evaluate. Re-enable with an aiLand-specific
+# `parameters` list (stl1, swvl1, snowc, 2t, slhf, ...) later if the
+# per-epoch sample plots turn out to be useful during real training.
+defaults:
+  - settings_base
+
+settings:
+  colormaps:
+    default:
+      _target_: anemoi.training.utils.custom_colormaps.MatplotlibColormap
+      name: viridis
+
+callbacks: []

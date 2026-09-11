@@ -5,6 +5,8 @@ __pycache__/
 venv/
 .venv-anemoi/
 .pip-tmp/
+# Hydra's default per-run output dir (anemoi-training config dumps/logs)
+outputs/
 *.egg-info/
 
 # Trained models and generated figures are reproducible outputs

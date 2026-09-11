@@ -3,7 +3,81 @@
 # shape (39444, 76, 1, 40320), frequency 6h, 76 named variables matching
 # ailand.config's O96_STATIC/O96_MET/O96_TEMPORAL/O96_GEO/O96_PRESETS exactly.
 # No extraction step needed -- this is the anemoi-datasets store itself.
-dataset: /lus/h1aiws01/project/ai-ml/datasets/aifs-rd-an-oper-isc8-mars-o96-1998-2024-6h-v1-ecland-era5met.zarr
+#
+# `dataset` MUST be the actual recipe (a dict with `select`), not a bare path
+# string. `dataloader/native_grid.yaml`'s `dataset_config.dataset` resolves
+# to `${dataloader.dataset}` -> `${system.input.dataset}` directly -- that is
+# the recipe the real NativeGridDataset reader opens, and it is also what
+# `graph/ailand_point_wise.yaml`'s AnemoiDatasetNodes builds the graph from
+# (via `${dataloader.training.datasets.data.dataset_config}`). A `select`
+# placed anywhere else (e.g. under data/ailand_o96.yaml's own
+# `datasets.data.dataset`) never reaches either of those and is silently
+# inert -- confirmed the hard way: a first smoke test loaded all 76 raw
+# variables and treated the 28 not explicitly forcing/diagnostic as
+# prognostic (sd, rsn, aco2gpp, e, ro, 10u/10v, ...), not the 7 aiLand v1
+# actually uses.
+dataset:
+  dataset: /lus/h1aiws01/project/ai-ml/datasets/aifs-rd-an-oper-isc8-mars-o96-1998-2024-6h-v1-ecland-era5met.zarr
+  select:
+    # O96_STATIC
+    - cl
+    - dl
+    - cvh_0
+    - cvl_0
+    - tvh_0
+    - tvl_0
+    - hveg_cov_0
+    - lveg_cov_0
+    - hveg_rsmin_0
+    - lveg_rsmin_0
+    - hveg_z0m_0
+    - lveg_z0m_0
+    - theta_cap_0
+    - theta_pwp_0
+    - sdor_0
+    - isor_0
+    - anor_0
+    - slor_0
+    - z
+    - lsm_0
+    - c3_c4_0
+    # O96_MET
+    - t_ml_137
+    - q_ml_137
+    - u_ml_137
+    - v_ml_137
+    - ssrd
+    - strd
+    - tp
+    - sf
+    - sp
+    - lai_hv
+    - lai_lv
+    # O96_TEMPORAL
+    - cos_julian_day
+    - sin_julian_day
+    - cos_local_time
+    - sin_local_time
+    - insolation
+    # O96_GEO
+    - cos_latitude
+    - sin_latitude
+    - cos_longitude
+    - sin_longitude
+    # prognostic (v1 Table 1)
+    - stl1
+    - stl2
+    - stl3
+    - swvl1
+    - swvl2
+    - swvl3
+    - snowc
+    # diagnostic (v1 Table 1)
+    - 2t
+    - 2d
+    - skt
+    - slhf
+    - sshf
 graph: null
 loss_matrices_path: null
 truncation: null

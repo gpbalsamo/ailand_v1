@@ -5,9 +5,8 @@
 #
 # TODO(Phase 1, open item): num_channels=512 / processor num_layers=6 is an
 # approximation of "6 hidden blocks of width 512" -- not yet checked against
-# an actual instantiated parameter count. Needs `torchinfo.summary` (already
-# a dependency) against this config once the land-masking question (see
-# data/ailand_o96.yaml) is resolved and the model can actually be built.
+# an actual instantiated parameter count. Needs `torchinfo.summary` against
+# this config now that the model actually builds (see the next comment).
 num_channels: 512
 cpu_offload: False
 
@@ -32,8 +31,19 @@ layer_kernels:
     _target_: anemoi.models.layers.normalization.AutocastLayerNorm
     bias: False
 
+# `num_channels` is NOT auto-injected from the top-level value above into
+# these sub-configs -- confirmed by reading the real constructor signatures
+# (anemoi.models.layers.{processor,mapper}.PointWise*.__init__, all
+# keyword-only with no default) and by hitting the resulting TypeError in a
+# CPU smoke test: the shipped point_wise.yaml relies on an injection that
+# doesn't happen, so it's set explicitly on each block here. `trainable_size`
+# is dropped too -- none of these three classes' real signatures have a
+# matching parameter (silently absorbed by **kwargs at runtime, but flagged
+# "extra_forbidden" by the pydantic schema, and does nothing either way for
+# a point-wise mapper with no real edges).
 processor:
   _target_: anemoi.models.layers.processor.PointWiseMLPProcessor
+  num_channels: ${model.num_channels}
   num_layers: 6
   num_chunks: 1
   mlp_hidden_ratio: 1  # keep hidden width == num_channels (512), not 4x
@@ -47,7 +57,7 @@ encoders:
     dataset_fusing_strategy: "not_supported"
     mapper:
       _target_: anemoi.models.layers.mapper.PointWiseForwardMapper
-      trainable_size: ${model.edge_trainable_parameters.data2hidden}
+      num_channels: ${model.num_channels}
       cpu_offload: ${model.cpu_offload}
       gradient_checkpointing: True
       layer_kernels: ${model.layer_kernels}
@@ -61,7 +71,7 @@ decoders:
     target_node_features: ["encoded_data"]
     mapper:
       _target_: anemoi.models.layers.mapper.PointWiseBackwardMapper
-      trainable_size: ${model.edge_trainable_parameters.hidden2data}
+      num_channels: ${model.num_channels}
       initialise_data_extractor_zero: False
       cpu_offload: ${model.cpu_offload}
       gradient_checkpointing: True

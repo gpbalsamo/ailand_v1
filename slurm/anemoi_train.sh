@@ -1,19 +1,30 @@
 #!/bin/bash
 #SBATCH --job-name=ailand-anemoi
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=96G
+#SBATCH --qos=ng
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=4
+#SBATCH --gpus-per-node=4
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=0
 #SBATCH --time=06:00:00
 #SBATCH --output=slurm/logs/%x.%j.out
 #SBATCH --error=slurm/logs/%x.%j.out
 #
-# Phase 1 (R=4) pretraining of aiLand v1 on the anemoi-training stack --
-# see docs/ANEMOI.md before running this for real; config_validation is
-# disabled for a known upstream schema bug (documented there), and the
-# land-point masking question is not yet resolved, so this will currently
-# train over the full 40320-point O96 grid (ocean included), not the
-# 11,538-point land set.
+# Phase 1 (R=4) pretraining of aiLand v1 on the anemoi-training stack.
+# Resource allocation matches the real v1 training job (1 node, 4 GPUs, 4
+# tasks, 12 CPUs/task, qos=ng) -- not the hand-rolled pipeline's 1-GPU
+# compromise, since this pipeline trains on the full 11,538-point O96 land
+# set from the real /lus store, same as the paper.
+#
+# See docs/ANEMOI.md before changing anything here. A full CPU dry run
+# (1 training step, 1 validation step, real O96 land data, R=4 rollout)
+# completed end to end -- exit 0, checkpoint saved, land masking exact at
+# 11,538 points, model 1.6M params matching the hand-rolled v1 preset. Not
+# yet run on GPU, and not yet run past a single step -- watch the first real
+# epoch's loss trend as the actual sanity check; config_validation is
+# disabled for a confirmed-upstream, confirmed-harmless-here schema bug
+# (docs/ANEMOI.md), so schema silence alone proves nothing.
 #
 #   sbatch slurm/anemoi_train.sh                       # Phase 1 (R=4, 80 epochs)
 #   sbatch --export=PHASE=2 slurm/anemoi_train.sh       # Phase 2 (R=8, 8 epochs), resumes Phase 1
@@ -32,15 +43,29 @@ nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
 python3 -c "import torch; print('torch', torch.__version__, '| cuda', torch.cuda.is_available(),
       '|', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NO GPU')"
 
+# `--config-path` resolves relative to anemoi.training.train's own package
+# location for this subcommand (unlike `config validate`, which accepts a
+# literal directory) -- `--config-dir` is the flag that actually adds a
+# filesystem directory to Hydra's search path. Found the hard way in a CPU
+# smoke test; see docs/ANEMOI.md.
+#
+# DDP across 4 GPUs needs one process per GPU, launched via `srun` --
+# pytorch_lightning's own SLURM-environment autodetection expects this
+# (it warned "srun is available but not used" when this was run as a plain
+# `python`/`anemoi-training` invocation without srun in the smoke test).
 PHASE="${PHASE:-1}"
 if [ "$PHASE" = "1" ]; then
     echo "=== Phase 1: R=4, 80 epochs ==="
-    anemoi-training train --config-path configs/anemoi --config-name ailand_v1 \
+    srun anemoi-training train --config-dir "$REPO/configs/anemoi" --config-name ailand_v1 \
+        system.hardware.num_gpus_per_node=4 \
+        system.hardware.num_nodes=1 \
         hydra.run.dir=models/anemoi/phase1
 else
     echo "=== Phase 2: R=8, 8 epochs, resuming Phase 1 checkpoint ==="
     PHASE1_CKPT="${PHASE1_CKPT:-models/anemoi/phase1/checkpoint/last.ckpt}"
-    anemoi-training train --config-path configs/anemoi --config-name ailand_v1 \
+    srun anemoi-training train --config-dir "$REPO/configs/anemoi" --config-name ailand_v1 \
+        system.hardware.num_gpus_per_node=4 \
+        system.hardware.num_nodes=1 \
         +task=ailand_forecaster_r8 \
         training.max_epochs=8 \
         training.transfer_learning=True \

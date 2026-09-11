@@ -7,11 +7,16 @@ aiLand converges onto ECMWF's own production ML tooling. Started because
 anemoi-models shipped a genuine point-wise (no graph coupling) MLP
 architecture — see "Why this exists" below.
 
-Status: **Phase 0 done** (environment verified, real training data reachable
-directly). **Phase 1 config written and schema-validated**, except for one
-upstream bug (documented below) and one open design question (land masking).
-No training job has been run yet — that's the natural next step, and a real
-GPU-hours commitment, so it hasn't been launched without a separate go-ahead.
+Status: **Phase 0 done.** **Phase 1 config written, schema-validated, and
+verified end to end on CPU**: a full epoch (1 training step, 1 validation
+step, R=4 rollout, real O96 land data) ran to completion and saved a
+checkpoint (`EXIT_CODE=0`, `Trainer.fit stopped: max_epochs=1 reached`).
+Land-point masking is resolved and verified exact (11,538 nodes). Five other
+real bugs surfaced by CPU smoke-testing are fixed and documented below. No
+GPU job has been run yet — that's the natural next step, now that CPU
+smoke-testing has exhausted what it can catch, and a real GPU-hours
+commitment (`slurm/anemoi_train.sh`, sized to Nina Raoult's own v1 job: 1
+node, 4×A100, `qos=ng`).
 
 ---
 
@@ -99,6 +104,98 @@ open_dataset(path, select=["stl1", "swvl1", "2t", ...])  # subsets variables --
 # never become inputs or targets by accident.
 ```
 
+## Land-point masking — resolved
+
+Restricted at the **graph** level, not the dataset level. A point-wise graph
+has no edges, so `anemoi.graphs.processors.post_process.RemoveUnconnectedNodes`
+would otherwise drop *every* node as "unconnected" — but its `ignore`
+attribute inverts that: nodes where `ignore` is `True` are kept regardless of
+connectivity. `graph/ailand_point_wise.yaml` adds a `land_mask` node
+attribute — `ailand.anemoi_ext.ThresholdAnemoiDatasetVariable` (a small new
+class; anemoi-graphs ships `NonzeroAnemoiDatasetVariable`, `!= 0`, and
+`NonmissingAnemoiDatasetVariable`, not NaN, but nothing with a numeric
+threshold — needed one, since "any nonzero land fraction" keeps far more
+coastal/mixed cells than the paper's land set) reading `lsm_0 > 0.5`, matching
+`ailand.extract`'s `--lsm-threshold` default exactly — then
+`RemoveUnconnectedNodes(nodes_name: data, ignore: land_mask)` drops everything
+else.
+
+Verified twice: once standalone in Python (`AnemoiDatasetNodes` +
+`ThresholdAnemoiDatasetVariable` + `RemoveUnconnectedNodes` on the real O96
+store → **exactly 11,538 nodes**, matching the paper's own land-point count
+to the digit), and again inside a real `anemoi-training train` run
+("Removing 28782 nodes from data" → 40320 − 28782 = 11,538).
+
+## Bugs found and fixed by CPU smoke-testing
+
+None of these showed up in `anemoi-training config validate` (a static
+schema check) — only running the real pipeline surfaced them. In order hit:
+
+1. **`select` was silently inert.** Placed under `data/ailand_o96.yaml`'s own
+   `datasets.data.dataset.select`, which nothing actually reads.
+   `dataloader/native_grid.yaml`'s `dataset_config.dataset` resolves straight
+   to `${system.input.dataset}` — *that* is the recipe the real
+   `NativeGridDataset` reader and the graph builder both open. Moved `select`
+   there (`system/input/ailand_o96.yaml`). Caught by an initial run loading
+   all 76 raw variables and folding the 28 not listed under
+   `forcing`/`diagnostic` into "prognostic" — `sd`, `rsn`, `aco2gpp`, `e`,
+   `ro`, `10u`/`10v`, etc. would all have been fed back autoregressively.
+2. **`mpi4py` importable but non-functional on this node** (no `libmpi.so`
+   at all). `pytorch_lightning`'s SLURM/cluster-environment autodetection
+   tries `from mpi4py import MPI` and expects a plain `ImportError` on
+   failure — but mpi4py's own ABI probe raises `RuntimeError` first,
+   uncaught, crashing every run before Trainer setup even started. Not our
+   dependency (system-level, `Required-by:` empty) and not safe to touch.
+   Fixed by shadowing it: `.venv-anemoi/lib/python3.13/site-packages/mpi4py/__init__.py`
+   is a one-line stub that raises a clean `ImportError` — the venv's own
+   site-packages is earlier on `sys.path` than the system one, so this
+   shadows cleanly without touching anything shared. We don't use MPI
+   (`DDPGroupStrategy` over NCCL for the real 4-GPU job, not MPI collectives).
+3. **`num_channels` genuinely not auto-injected** — confirmed by reading the
+   real constructor signatures (`PointWiseMLPProcessor`/`PointWiseForwardMapper`/
+   `PointWiseBackwardMapper.__init__`, all keyword-only, no default) and by
+   hitting the resulting `TypeError` at model-build time. The shipped
+   `point_wise.yaml` sets `num_channels` once at `model.num_channels` and
+   never propagates it to the sub-blocks that need it — a template bug, not
+   just the schema-validator mismatch noted below. Fixed by adding
+   `num_channels: ${model.num_channels}` to each of `processor`,
+   `encoders.0.mapper`, `decoders.0.mapper` in `model/ailand_point_wise.yaml`,
+   and dropping `trainable_size` from the mappers (none of the three real
+   signatures have a matching parameter; absorbed by `**kwargs` at runtime
+   either way, so it was a no-op, just a schema-validator complaint).
+4. **NaNs in real forcing data** (517,650 in one batch) — `AssertionError:
+   NaNs found in processed tensor after Processors`. Same class of problem
+   as `docs/RESULTS.md`'s "Lessons learnt #3" (114 missing `slhf` values in
+   our own extract cascading into NaN predictions), at real scale here on
+   the actual `/lus` store: some static/vegetation fields (`theta_cap_0`/
+   `theta_pwp_0`, `lai_hv`/`lai_lv`, ...) are undefined at some of the
+   11,538 land points (bare soil, certain soil types). `ailand.mlp.Normaliser`
+   sidesteps this by computing mean/std NaN-aware directly
+   (`np.nanmean`/`np.nanstd`); the anemoi-native equivalent is an imputer
+   *before* the normalizer in the processor chain —
+   `anemoi.models.preprocessing.imputer.InputImputer` with `default: "mean"`,
+   added to `data/ailand_o96.yaml`.
+5. **Plotting callbacks hardcode atmospheric variable names.**
+   `diagnostics/plot/settings_base.yaml`'s default `parameters` list
+   (`z_500`, `t_850`, `10u`, `10v`, `tp`, `cp`, ...) and two `BatchOutputPlot`
+   blocks in `detailed.yaml` don't exist in a land-surface state —
+   `KeyError: 'z_500'`, uncaught, `exit code 1`, right after the validation
+   sanity check. Not a training blocker either way (this repo has its own
+   plotting in `ailand.evaluate`) — disabled cleanly via a new
+   `diagnostics/plot/ailand.yaml` (`callbacks: []`) rather than hand-fixing
+   every hardcoded list. Revisit with an aiLand `parameters` list
+   (`stl1`, `swvl1`, `snowc`, `2t`, `slhf`, ...) later if per-epoch sample
+   plots turn out to be useful.
+6. **`anemoi-training train`'s `--config-path` is not a filesystem path.**
+   Unlike `config validate` (which takes a literal directory), `train`'s
+   bare `@hydra.main(config_path=None, ...)` resolves a relative
+   `--config-path` against the calling module's own package location —
+   `--config-path configs/anemoi` was silently reinterpreted as the Python
+   package path `anemoi.training.train.configs.anemoi` and failed to find
+   it. Hydra's `--config-dir` is the flag that actually adds a filesystem
+   directory to the search path. `slurm/anemoi_train.sh` and the command
+   above both use `--config-dir`.
+
 ## Config layout (`configs/anemoi/`)
 
 Generated once via `anemoi-training config generate --output configs/anemoi`
@@ -116,7 +213,11 @@ what's aiLand-specific). New files added on top:
 | `task/ailand_forecaster_r8.yaml` | Phase 2: rollout fixed at 8, used via `+task=` on resume |
 | `training/training_loss/ailand.yaml` | Huber (delta=1.0), tendency + NaN-mask + time-step scalers |
 | `training/ailand_pretrain.yaml` | Grad clip norm 5.0, LR 5e-4→3e-7 cosine w/ 1000-step-equivalent warmup, max_epochs=80 |
-| `diagnostics/ailand_evaluation.yaml` | Same as shipped `evaluation.yaml`, mlflow's required-but-unused `tracking_uri` filled in |
+| `training/scalers/ailand.yaml` | Same as shipped `global.yaml` minus `general_variable`/`pressure_level` (no atmospheric groups; `pressure_level` crashes without one) |
+| `diagnostics/ailand_evaluation.yaml` | Same as shipped `evaluation.yaml`, mlflow's required-but-unused `tracking_uri` filled in, plotting disabled |
+| `diagnostics/plot/ailand.yaml` | Disables the plot callbacks (their variable lists are atmospheric) |
+| `graph/ailand_point_wise.yaml` | Land-point masking (see above) |
+| `src/ailand/anemoi_ext.py` | `ThresholdAnemoiDatasetVariable`, the node-attribute class the land mask needs |
 
 **Two-phase rollout, one file each, not one growing schedule.** v1 trains
 R=4 for 80 epochs then R=8 for 8 epochs — two distinct epoch counts, not a
@@ -140,67 +241,93 @@ needed for this phase.
 
 ## Validating the config
 
+Schema check (known to reject the PointWise family regardless — see open
+item #1 below; useful for catching *other* mistakes, not this one):
+
 ```bash
 anemoi-training config validate --config-path configs/anemoi --config-name ailand_v1
 ```
 
-## Open items (before submitting a real training job)
+**The real check is an actual CPU run** — cheap (a few minutes with these
+limits), catches everything the schema check can't, and is what actually
+found bugs #1-#5 above. Land, data loading, model build, one training step,
+one validation step, checkpoint save — all for real, on a tiny slice, before
+spending GPU-hours:
 
-1. **Land-point masking — unresolved.** `open_dataset` with no further
-   arguments returns all 40,320 global grid points; the paper's Table B1 and
-   this repo's own reproduction score over the **11,538 O96 land points**
-   only, excluding glacier/coastal too. Two candidate mechanisms found, neither
-   wired up yet:
-   - `anemoi.datasets`' `Masked` dataset wrapper
-     (`usage/gridded/masked.py`), keyed by an `lsm_0`-derived boolean mask,
-     applied to the raw dataset;
-   - restricting the *graph* node builder instead (`graph/point_wise.yaml`'s
-     `AnemoiDatasetNodes`) to land nodes, leaving the dataloader reading the
-     full grid.
+```bash
+PYTHONPATH="$PWD/src" PYTHONUNBUFFERED=1 anemoi-training train \
+  --config-dir "$PWD/configs/anemoi" --config-name ailand_v1 \
+  system.hardware.accelerator=cpu \
+  dataloader.limit_batches.training=1 dataloader.limit_batches.validation=1 \
+  dataloader.num_workers.training=1 dataloader.num_workers.validation=1 \
+  dataloader.batch_size.training=1 dataloader.batch_size.validation=1 \
+  training.max_epochs=1
+```
 
-   Training or scoring before this is resolved will run over ocean points
-   too and will not be comparable to Table B1.
+Last run: `EXIT_CODE=0`. Model 1.6M params; `Parameter stl1/stl2/.../snowc is
+being scaled by statistic_tendencies` (confirms the tendency scaler hits
+exactly the 7 prognostic variables, nothing else); one training step
+(~2m40s on CPU — R=4 rollout, expect far faster on an A100); one validation
+step; checkpoints written with metadata; `Trainer.fit stopped: max_epochs=1
+reached`. Loss values themselves (`~1.6e5` train, `~2.4e5` val) aren't
+diagnostic from a single random-init step — what matters here is that it
+completed, not the number.
 
-2. **Confirmed upstream bug: `config_validation` rejects the PointWise
-   model family.** `anemoi-training config validate` (and the
-   `config_validation: True` flag, which gates the same `BaseSchema(**cfg)`
-   check at train time) raises ~28 errors like:
+Use `num_workers=1`, not `0` — anemoi's `MultiDataset.__iter__` assumes
+`worker_id` is set by the normal DataLoader worker-init path, which never
+runs at `num_workers=0` (`AttributeError: 'MultiDataset' object has no
+attribute 'worker_id'`); with `num_workers=0` you'd also need to separately
+override `dataloader.prefetch_factor=null` and
+`dataloader.persistent_workers=false`, both invalid for zero workers — not
+worth it when `num_workers=1` just works.
 
-   ```
-   model.BaseModelSchema.processor.`anemoi.models.layers.processor.PointWiseMLPProcessor`.num_channels
-     Field required [type=missing]
-   model.BaseModelSchema.encoders.0.mapper.`anemoi.models.layers.mapper.PointWiseForwardMapper`.trainable_size
-     Extra inputs are not permitted [type=extra_forbidden]
-   ```
+**A note on the login node**: this node runs other users' unrelated,
+long-running jobs (large `rsync` transfers, `anemoi-datasets` builds) that
+can make a CPU smoke test appear to hang — one attempt sat at `0:00` CPU
+time for 15+ minutes with zero output even with `PYTHONUNBUFFERED=1`, which
+turned out to be pure node contention, not a bug: killing it and retrying
+moments later ran cleanly in under 4 minutes. If a smoke test seems stuck,
+check `ps aux` for what else is running before assuming the config is at
+fault.
 
+## Open items (minor, non-blocking)
+
+1. **Upstream schema bug, still worth reporting.** `anemoi-training config
+   validate` (and the `config_validation: True` flag, gating the same
+   `BaseSchema(**cfg)` check at train time) rejects the PointWise model
+   family's own shipped template — `num_channels` "Field required" on
+   `PointWiseMLPProcessor`/`PointWiseForwardMapper`/`PointWiseBackwardMapper`,
+   `trainable_size` "Extra inputs are not permitted" on the mappers.
    **Reproduced on the pristine, unmodified shipped `point_wise.yaml`** (with
-   dummy `system.input.dataset`/`graph`/`output.root`/`diagnostics.log.mlflow.tracking_uri`
-   overrides just to get far enough to reach this check) — so this is not a
-   mistake in `ailand_v1.yaml`. The schema classes
-   (`anemoi.models.schemas.{processor,encoder,decoder}.PointWise*Schema`)
-   require `num_channels` as a *direct* field and forbid `trainable_size` on
-   the encoder/decoder mappers, but the shipped YAML only sets
-   `num_channels` once at `model.num_channels` and *does* pass
-   `trainable_size` to the mappers (as `${model.edge_trainable_parameters.*}`)
-   — a mismatch between the YAML template and its own pydantic schema for a
-   just-shipped model family. `ailand_v1.yaml` sets `config_validation: False`
-   with a comment pointing here; whether the actual `AnemoiModelEncProcDec`
-   construction path (which may inject `num_channels` into sub-configs in
-   code, not YAML) tolerates this at runtime is untested — that's part of
-   what the first real training attempt will tell us. Worth reporting
-   upstream regardless.
+   dummy dataset/graph/output/mlflow overrides just to reach the check), so
+   this is an upstream mismatch between the YAML template and its own
+   pydantic schema, not a mistake here. Confirmed the *runtime* path has the
+   matching real bug too (see fix #3 above) — `config_validation: False`
+   stays set with a comment pointing here, since our config is now
+   internally consistent even though the schema still complains.
 
-3. **`num_channels`/`num_layers` sizing is an approximation.** `512` /
-   `6` in `model/ailand_point_wise.yaml` approximates v1's 6×512
-   (~1.3M params), not yet checked against an actual instantiated parameter
-   count (blocked on (1) and (2) above — need a working model instantiation
-   to run `torchinfo.summary` against).
+2. **Param count checked, not yet apples-to-apples verified against v1.**
+   The CPU smoke test's model summary reports **1.6M params** — matching the
+   hand-rolled pipeline's own `v1+fluxes` preset at 6×512 exactly (see
+   `slurm/logs/ailand-repro.34049198.out`: "parameters: 1,636,880"). `512`/`6`
+   in `model/ailand_point_wise.yaml` is confirmed right in that sense; not
+   yet checked whether the point-wise encoder/decoder's own parameter
+   overhead (vs. `AiLandMLP`'s plain `Linear`) changes the *effective*
+   capacity at matched param count.
 
-4. **LR-scheduler epoch/step approximation.** v1: 1000-step warmup. This
+3. **LR-scheduler epoch/step approximation.** v1: 1000-step warmup. This
    config uses `t_in_epochs: true, warmup_t: 2` (epochs) as a rough stand-in,
    since `max_epochs` rather than a precomputed `max_steps` governs Phase 1.
    Not yet checked against this dataset's actual steps/epoch at the real
-   batch size.
+   batch size (46,152, per `docs/RESULTS.md`).
+
+4. **Checkpoint metadata saves the full 40,320-point grid's lat/lon**, not
+   the 11,538-point masked subset the model actually trained on (seen in the
+   CPU smoke test's checkpoint-saving log lines). Likely just describes the
+   underlying dataset's coordinate reference system for `anemoi-inference`
+   tooling, independent of which subset was used for training — but not
+   confirmed harmless, worth a second look before relying on
+   `anemoi-inference` for scoring rather than adapting `ailand.evaluate`.
 
 ## Still to build (Phases 2-4 of the original plan)
 

@@ -3,81 +3,28 @@
 # (see system/input/ailand_o96.yaml) and against ailand.config's
 # O96_STATIC/O96_MET/O96_TEMPORAL/O96_GEO/O96_PRESETS["v1"] lists.
 #
-# `select` restricts the 76-variable store to exactly what v1 uses, so the
-# store's extra fields (stl4, swvl4, sd, rsn, aco2*, e, ro, 10u/10v, ...) never
-# become inputs or targets by accident.
+# `select` (restricting the 76-variable store to exactly what v1 uses, so
+# stl4, swvl4, sd, rsn, aco2*, e, ro, 10u/10v etc. never become inputs or
+# targets by accident) lives in **system/input/ailand_o96.yaml**, not here --
+# `dataloader/native_grid.yaml`'s `dataset_config.dataset` resolves straight
+# to `${system.input.dataset}`, so that's the recipe the real dataset reader
+# and the graph builder both actually open. A `select` placed under this
+# file's own `datasets.data.dataset` is never read by either and is silently
+# inert -- caught in a smoke test that loaded all 76 raw variables and folded
+# the 28 not listed under `forcing`/`diagnostic` below into "prognostic".
 #
 # Anything not listed under `forcing` or `diagnostic` is prognostic by
 # anemoi's convention -- here, stl1-3/swvl1-3/snowc, matching config.py's
-# O96_PRESETS["v1"] exactly. `variable_tendency`/`stdev_tendency` scalers
-# (training/scalers/global.yaml) only ever touch these seven.
+# O96_PRESETS["v1"] exactly, *provided* the store was already restricted to
+# v1's 12 state/diagnostic variables before reaching this split (which is
+# what system/input/ailand_o96.yaml's `select` does). `variable_tendency`/
+# `stdev_tendency` scalers (training/scalers/global.yaml) only ever touch
+# these seven.
 format: zarr
 frequency: 6h
 
 datasets:
   data:
-    dataset:
-      select:
-        # O96_STATIC
-        - cl
-        - dl
-        - cvh_0
-        - cvl_0
-        - tvh_0
-        - tvl_0
-        - hveg_cov_0
-        - lveg_cov_0
-        - hveg_rsmin_0
-        - lveg_rsmin_0
-        - hveg_z0m_0
-        - lveg_z0m_0
-        - theta_cap_0
-        - theta_pwp_0
-        - sdor_0
-        - isor_0
-        - anor_0
-        - slor_0
-        - z
-        - lsm_0
-        - c3_c4_0
-        # O96_MET
-        - t_ml_137
-        - q_ml_137
-        - u_ml_137
-        - v_ml_137
-        - ssrd
-        - strd
-        - tp
-        - sf
-        - sp
-        - lai_hv
-        - lai_lv
-        # O96_TEMPORAL (precomputed in the store, unlike the mock profile)
-        - cos_julian_day
-        - sin_julian_day
-        - cos_local_time
-        - sin_local_time
-        - insolation
-        # O96_GEO
-        - cos_latitude
-        - sin_latitude
-        - cos_longitude
-        - sin_longitude
-        # prognostic (v1 Table 1) -- not listed as forcing/diagnostic below
-        - stl1
-        - stl2
-        - stl3
-        - swvl1
-        - swvl2
-        - swvl3
-        - snowc
-        # diagnostic (v1 Table 1)
-        - 2t
-        - 2d
-        - skt
-        - slhf
-        - sshf
-
     forcing:
       - cl
       - dl
@@ -128,20 +75,29 @@ datasets:
       - slhf
       - sshf
 
-    # TODO(Phase 1, open item): restrict to LAND points only. lsm_0 is in the
-    # forcing set so it's available to filter on, but the *mechanism* isn't
-    # settled -- two candidates found in anemoi-datasets/anemoi-graphs:
-    #   (a) anemoi.datasets' `Masked` dataset wrapper (usage/gridded/masked.py)
-    #       applied to `dataset:` above, keyed by an lsm_0>0.5 boolean mask;
-    #   (b) restrict the *graph* node builder (graph/point_wise.yaml's
-    #       AnemoiDatasetNodes) to land nodes instead, leaving the raw
-    #       dataloader reading the full 40320-point grid.
-    # Neither traced to a working recipe yet -- see docs/ANEMOI.md.
-    # Without this, training/scoring runs over all 40320 points (ocean
-    # included), not the 11,538-point O96 land set the hand-rolled pipeline
-    # and the paper's Table B1 use.
+    # Land-point restriction (11,538 O96 points, matching the paper and the
+    # hand-rolled pipeline exactly) happens at the *graph* level, not here --
+    # see graph/ailand_point_wise.yaml's `land_mask` attribute +
+    # RemoveUnconnectedNodes post-processor, verified to produce exactly
+    # 11,538 nodes from this store's lsm_0 field.
 
+    # Processors run in the order defined -- the imputer MUST come before the
+    # normalizer. Found necessary the hard way: a CPU smoke test hit
+    # `AssertionError: NaNs (517650) found in processed tensor after
+    # Processors` on the real O96 land set. Same class of problem as
+    # docs/RESULTS.md's "Lessons learnt #3" (114 missing slhf values in our
+    # own extract cascading into NaN predictions) but at real scale here --
+    # likely soil/vegetation static fields (theta_cap_0/theta_pwp_0,
+    # lai_hv/lai_lv, ...) that are undefined over bare soil or certain soil
+    # types at some of the 11,538 land points. `ailand.mlp.Normaliser`
+    # sidesteps this because it computes NaN-aware mean/std directly
+    # (np.nanmean/np.nanstd) rather than imputing -- InputImputer with each
+    # variable's own dataset mean is the anemoi-native equivalent.
     processors:
+      imputer:
+        _target_: anemoi.models.preprocessing.imputer.InputImputer
+        config:
+          default: "mean"
       normalizer:
         _target_: anemoi.models.preprocessing.normalizer.InputNormalizer
         config:

@@ -12,7 +12,7 @@ defaults:
   - dataloader: native_grid
   - diagnostics: ailand_evaluation
   - system: example
-  - graph: point_wise
+  - graph: ailand_point_wise
   - model: ailand_point_wise
   - task: ailand_forecaster
   - training: ailand_pretrain

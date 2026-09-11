@@ -12,3 +12,9 @@ anemoi-training==0.17.0
 anemoi-models==0.19.0
 anemoi-graphs==0.9.7
 anemoi-datasets==0.5.43
+
+# Not pulled in automatically, but imported unconditionally deep in
+# anemoi-training's module graph (tasks/forecaster.py ->
+# diagnostics/callbacks/plot.py -> .../plotting/sample.py) -- anemoi-training
+# fails to import at all without it, even with plotting disabled in config.
+datashader

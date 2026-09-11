@@ -7,7 +7,7 @@
 # epoch counts per phase (80 then 8) map more directly onto two runs than one
 # schedule, so that's what this does.
 defaults:
-  - scalers: global
+  - scalers: ailand
   - training_loss: ailand
   - optimization: default
   - weight_averaging: null

@@ -1,8 +1,9 @@
 # Same as the shipped diagnostics/evaluation.yaml, except mlflow's
 # tracking_uri is given a concrete (unused) value -- mlflow.enabled is False
-# by default, but the schema requires tracking_uri regardless.
+# by default, but the schema requires tracking_uri regardless -- and
+# plotting is disabled (see diagnostics/plot/ailand.yaml).
 defaults:
-  - plot: detailed
+  - plot: ailand
   - callbacks: placeholder
   - benchmark_profiler: detailed
   - log: mlflow
