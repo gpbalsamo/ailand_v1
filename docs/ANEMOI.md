@@ -290,6 +290,83 @@ moments later ran cleanly in under 4 minutes. If a smoke test seems stuck,
 check `ps aux` for what else is running before assuming the config is at
 fault.
 
+## First real GPU run: Phase 1 (R=4, 80 epochs) + rollout-8 continuation
+
+Two more real bugs surfaced once the CPU-verified config actually ran on GPU —
+same pattern as above: config validation and the CPU dry run stayed silent on
+both.
+
+7. **LR scheduler interval mismatch, flatlined the first attempt.**
+   `t_in_epochs: true` with `t_initial: 80` assumes the scheduler is stepped
+   once per epoch, but `pl_lr_scheduler.interval` was left at its shipped
+   default of `step` — Lightning called `.step()` on every training step,
+   passing the cumulative step count, which timm's `CosineLRScheduler` takes
+   literally against `t_initial=80`. By ~80 steps into epoch 0 the LR had
+   already collapsed to `lr_min` (3e-7) and stayed there — caught after ~4
+   GPU-hours on job `35721973` (`train_multi_dataset_loss_epoch` pinned at
+   1.66e5 for all 38 completed epochs, no measurable learning). Fixed by
+   setting `pl_lr_scheduler.interval: epoch` in
+   `configs/anemoi/training/ailand_pretrain.yaml` (commit `6d90e67`).
+8. **Phase 2's `+task=` failed with "Multiple values for task".**
+   `slurm/anemoi_train.sh`'s Phase 2 branch used Hydra's add-key syntax
+   (`+task=ailand_forecaster_r8`), but `task` already has a default in the
+   base config (`defaults: [..., task: ailand_forecaster]`) — Hydra rejects
+   adding a key that already exists. Plain override (`task=...`) is correct.
+9. **Phase 2 silently skipped loading the Phase 1 weights.** Setting
+   `training.transfer_learning=True` alone does nothing by itself —
+   `anemoi.training.train.train.AnemoiTrainer` only enters the weight-loading
+   branch (and picks `transfer_learning_loading` vs. a plain
+   `load_from_checkpoint` within it) when `training.load_weights_only` is
+   also `True`. Without it, two things went wrong at once: the model started
+   from random init (the whole loading block was skipped), and `ckpt_path`
+   defaulted to the Phase 1 checkpoint anyway (`self.last_checkpoint` when
+   not weights-only), so Lightning tried to restore *full trainer state*
+   (`current_epoch=79`) against `max_epochs=8` and crashed with
+   `MisconfigurationException`. Fixed by adding
+   `training.load_weights_only=True` alongside `transfer_learning=True`.
+
+Both #8 and #9 were bugs in `slurm/anemoi_train.sh`'s Phase 2 branch, never
+exercised before (see file header at the time: "not yet run on GPU"); fixed
+and verified end to end, commit `2e5b437`.
+
+**Phase 1 also needed a mid-run resume**, unrelated to a bug: the original job
+(`35800355`) hit its own `--time=06:00:00` SLURM limit at epoch 57/80 and was
+killed. `anemoi-training` resumes full trainer state (optimizer, LR schedule,
+epoch/step counters) via `training.run_id=<run-id>` reusing the same
+checkpoint directory — distinct from `fork_run_id`/`warm_start`, which start a
+*new* run from another run's weights only (that's what Phase 2 uses). See
+`slurm/anemoi_train_resume.sh`. A resume job (`35897945`) picked up from
+`last.ckpt` (epoch 56) and finished the remaining 24 epochs cleanly.
+
+**Run stats** (1 node, 4× NVIDIA A100-SXM4-40GB, 48 CPUs, `qos=ng`):
+
+| | rollout | epochs | wall clock | GPU-hours | SBU | steps | throughput |
+|---|---|---|---|---|---|---|---|
+| Phase 1 (2 jobs: original + resume) | R=4 | 80 | 7h 57m | ≈31.8 | 3,260.6 | 336,000 | ~12.2 it/s |
+| Rollout-8 continuation | R=8 | 8 | 1h 28m | ≈5.9 | 604.1 | 33,600 | ~6.4–6.7 it/s |
+| **Total** | | | **9h 26m** | **≈37.7** | **3,864.7** | | |
+
+(Excludes two near-instant failed Phase 2 attempts before bugs #8/#9 were
+fixed — 19s and 37s, ~6.4 SBU combined.) R=8 throughput is roughly half of
+R=4's, as expected for double the rollout length per step. Model: 1.6M
+trainable params (matching the hand-rolled pipeline's `v1+fluxes` preset).
+Data: 33,596 training / 1,456 validation anchors from the real
+`ecland-era5met` O96 zarr store. Checkpoint storage: Phase 1 run
+`e87471d5-9e0f-4236-96fb-288f89cb557c` 2.2 GB, rollout-8 run
+`0904de8a-fa38-4287-a476-89e1e6d62f38` 316 MB.
+
+**Not yet checked: exact per-epoch loss trend.** The tqdm progress-bar postfix
+(`train_multi_dataset_loss_epoch`, `val_multi_dataset_loss_epoch`) only prints
+3 significant figures and looks frozen at `train≈2.04e4`/`val≈2.13e4` from
+epoch 2 onward for the rest of both runs. Confirmed this is a display-rounding
+artifact, not a real plateau, by diffing model weights directly between the
+epoch-40 and epoch-53 Phase 1 checkpoints: encoder embedding weight changed
+~18% in relative norm, processor MLP biases 8–26% — the model kept learning
+throughout. No exact per-epoch loss curve is available since the configured
+`mlflow` logger's output directory (`models/anemoi/logs/mlflow`) was never
+created (logger likely disabled) — worth wiring up mlflow or tensorboard
+properly before relying on logged loss values rather than this workaround.
+
 ## Open items (minor, non-blocking)
 
 1. **Upstream schema bug, still worth reporting.** `anemoi-training config

@@ -1,0 +1,23 @@
+description: >
+  FLUXNET-Shuttle observations collocated onto the N320 land grid (see
+  src/ailand/fluxnet.py:build), repacked into anemoi-datasets format so
+  anemoi-training's own NativeGridDataset reader can consume it directly.
+  Carries the same variables as the N320 store plus obs_* tower observations
+  (slhf, sshf, swvl1-3, stl1-3), NaN wherever a tower has nothing to say.
+  See docs/ANEMOI.md, docs/STRATEGY.md Stage 2.
+dates:
+  start: 2010-01-01T00:00:00
+  end: 2022-12-31T18:00:00
+  frequency: 6h
+input:
+  xarray-zarr:
+    url: /perm/pad/ailand_v1/data/fluxnet_n320.zarr
+    flavour:
+      rules:
+        point: {name: x}
+        latitude: {name: lat}
+        longitude: {name: lon}
+        time: {name: time}
+output:
+  statistics:
+    allow_nans: true
