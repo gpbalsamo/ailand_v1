@@ -66,9 +66,10 @@ else
     srun anemoi-training train --config-dir "$REPO/configs/anemoi" --config-name ailand_v1 \
         system.hardware.num_gpus_per_node=4 \
         system.hardware.num_nodes=1 \
-        +task=ailand_forecaster_r8 \
+        task=ailand_forecaster_r8 \
         training.max_epochs=8 \
         training.transfer_learning=True \
+        training.load_weights_only=True \
         "system.input.warm_start=$PHASE1_CKPT" \
         hydra.run.dir=models/anemoi/phase2
 fi
